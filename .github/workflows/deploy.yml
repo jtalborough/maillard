@@ -185,13 +185,14 @@ jobs:
           DEPLOY_SHA: ${{ github.sha }}
           MAILLARD_TS_AUTHKEY: ${{ steps.sidecar-key.outputs.key }}
           MAILLARD_TS_TAG: ${{ vars.MAILLARD_TS_TAG || 'tag:maillard' }}
+          MAILLARD_SITE_URL: ${{ vars.MAILLARD_SITE_URL || 'https://roastery.example.com' }}
         with:
           host: ${{ secrets.NAS_HOST }}
           port: ${{ secrets.NAS_PORT || 22 }}
           username: ${{ secrets.NAS_USER }}
           key: ${{ secrets.NAS_SSH_KEY }}
           command_timeout: 10m
-          envs: MAILLARD_INGEST_SECRET,GHCR_TOKEN,GHCR_USER,DEPLOY_SHA,MAILLARD_TS_AUTHKEY,MAILLARD_TS_TAG
+          envs: MAILLARD_INGEST_SECRET,GHCR_TOKEN,GHCR_USER,DEPLOY_SHA,MAILLARD_TS_AUTHKEY,MAILLARD_TS_TAG,MAILLARD_SITE_URL
           script: |
             set -euo pipefail
             cd /volume1/docker/maillard
@@ -227,7 +228,7 @@ jobs:
             if [ -s "$ENV_TMP" ] && [ "$(tail -c 1 "$ENV_TMP" | wc -l)" -eq 0 ]; then
               printf '\n' >> "$ENV_TMP"
             fi
-            printf 'MAILLARD_SITE_URL=https://roastery.example.com\nMAILLARD_AI_AUTO_CONTROL_ENABLED=false\n' >> "$ENV_TMP"
+            printf 'MAILLARD_SITE_URL=%s\nMAILLARD_AI_AUTO_CONTROL_ENABLED=false\n' "${MAILLARD_SITE_URL:-https://roastery.example.com}" >> "$ENV_TMP"
             printf 'MAILLARD_INGEST_SECRET=%s\n' "$MAILLARD_INGEST_SECRET" >> "$ENV_TMP"
             mv -- "$ENV_TMP" .env
             chmod 600 .env
