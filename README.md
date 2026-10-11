@@ -12,10 +12,15 @@ Maillard connects a real, fire-breathing drum roaster to an AI assistant. It tal
 
 ## Screenshots
 
-> _Coming soon: live roast dashboard, AI profile planner, roast comparison, and label printing._
->
-> <!-- ![Live roast dashboard](docs/images/live-roast.png) -->
-> <!-- ![AI profile planner](docs/images/profile-planner.png) -->
+Real UI from a local demo run against the built-in roaster simulator, with synthetic coffees and roasts. No real roaster or AI key involved.
+
+**Live roast dashboard.** Bean and environment temperature, rate of rise, phase, controls and the event log, streaming from the roaster.
+
+![Live roast dashboard during a simulated roast](docs/images/live-roast.png)
+
+| Roast history | Green coffee inventory |
+|---|---|
+| ![Roast history with cupping scores](docs/images/roast-history.png) | ![Green coffee inventory](docs/images/coffees.png) |
 
 ## What is this?
 
