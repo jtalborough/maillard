@@ -1,0 +1,64 @@
+id: bond
+name: Bond
+description: Weekly Bond label for Example Roastery customer bags
+layout: craft
+
+colors:
+  background: "#ffffff"
+  name_block_bg: "#1A1A1A"
+  name_text: "#ffffff"
+  eyebrow_text: "#999999"
+  ghost_b: "rgba(255,255,255,0.08)"
+  body_bg: "#ffffff"
+  spec_label: "#888888"
+  spec_value: "#1A1A1A"
+  spec_divider: "#1A1A1A"
+  strip_bg: "#1A1A1A"
+  strip_label: "#ffffff"
+  strip_value: "#ffffff"
+  strip_divider: "#666666"
+  footer_bg: "#ffffff"
+  footer_border: "#1A1A1A"
+  logo_border: "#1A1A1A"
+  logo_b: "#1A1A1A"
+  brand_name: "#1A1A1A"
+  brand_tagline: "#888888"
+  qr_hint: "#888888"
+  corner_marks: "#1A1A1A"
+  label_border: "#1A1A1A"
+
+canvas:
+  width_inches: 4.0
+  height_inches: 4.0
+  dpi: 300
+  border_width: 3
+
+name_block:
+  diagonal_clip: true
+  clip_breakpoint: 0.38
+  ghost_b_enabled: true
+
+fonts:
+  heading_family: Oswald
+  body_family: Space Mono
+
+text:
+  brand_name: Example Roastery
+  brand_tagline: Coffee that connects
+  qr_hint: Scan to Cup
+
+fields:
+  eyebrow: ""
+  specs_left:
+    - {label: Process, source: processing}
+    - {label: Varietal, source: varietal}
+  specs_right:
+    - {label: Roast, source: roast_level}
+    - {label: Weight, source: weight_display}
+  strip:
+    - {label: Drop, source: drop_number, format: "{:03d}"}
+    - {label: Roasted, source: roast_date}
+    - {label: Weight, source: weight_display}
+
+corner_marks: true
+qr_enabled: true

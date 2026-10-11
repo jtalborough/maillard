@@ -1,0 +1,35 @@
+services:
+  maillard:
+    image: ghcr.io/jtalborough/maillard:latest
+    ports:
+      - "8080:8080"
+    env_file: .env
+    # Label printing (Zebra ZD421 over Ethernet):
+    # environment:
+    #   - MAILLARD_ZEBRA_HOST=192.0.2.20
+    #   - MAILLARD_LABEL_BASE_URL=http://192.0.2.50:8080
+    volumes:
+      - maillard-data:/app/data
+    restart: unless-stopped
+    stop_grace_period: 15s
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  mongo:
+    image: mongo:7
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+volumes:
+  mongo-data:
+  maillard-data:

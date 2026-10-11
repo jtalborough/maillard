@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "maillard": {
+      "command": "maillard",
+      "args": ["mcp"]
+    }
+  }
+}

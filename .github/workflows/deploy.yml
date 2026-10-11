@@ -1,0 +1,335 @@
+name: Build and Deploy Maillard
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency: { group: "maillard-deploy-${{ github.ref }}", cancel-in-progress: false }
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=ref,event=branch
+
+      - name: Compute version
+        id: version
+        run: |
+          DATE_TAG=$(date -u +'%Y.%m.%d')
+          # Count existing tags for today to generate build number
+          git fetch --tags --quiet
+          BUILD_NUM=$(git tag -l "${DATE_TAG}.*" | wc -l | tr -d ' ')
+          echo "app_version=${DATE_TAG}.${BUILD_NUM}" >> "$GITHUB_OUTPUT"
+          echo "git_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      - name: Tag build
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git tag "${{ steps.version.outputs.app_version }}"
+          git push origin "${{ steps.version.outputs.app_version }}"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.app_version }}
+            GIT_SHA=${{ steps.version.outputs.git_sha }}
+            BUILD_DATE=${{ steps.version.outputs.build_date }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: docker
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Check deployment configuration
+        id: precheck
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+          NAS_HOST: ${{ secrets.NAS_HOST }}
+          NAS_USER: ${{ secrets.NAS_USER }}
+          NAS_SSH_KEY: ${{ secrets.NAS_SSH_KEY }}
+          MAILLARD_INGEST_SECRET: ${{ secrets.MAILLARD_INGEST_SECRET }}
+        run: |
+          missing=()
+          for name in TS_OAUTH_CLIENT_ID TS_OAUTH_SECRET NAS_HOST NAS_USER NAS_SSH_KEY MAILLARD_INGEST_SECRET; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} )); then
+            echo "::warning::Missing deployment secrets: ${missing[*]}"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Join Tailscale
+        if: steps.precheck.outputs.enabled == 'true'
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Mint Maillard tailnet key
+        id: sidecar-key
+        if: steps.precheck.outputs.enabled == 'true'
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+          MAILLARD_TS_TAG: ${{ vars.MAILLARD_TS_TAG || 'tag:maillard' }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          tag = os.environ["MAILLARD_TS_TAG"]
+          key = ""
+          try:
+              token_request = urllib.request.Request(
+                  "https://api.tailscale.com/api/v2/oauth/token",
+                  data=urllib.parse.urlencode({
+                      "grant_type": "client_credentials",
+                      "client_id": os.environ["TS_OAUTH_CLIENT_ID"],
+                      "client_secret": os.environ["TS_OAUTH_SECRET"],
+                  }).encode(),
+                  method="POST",
+              )
+              with urllib.request.urlopen(token_request, timeout=20) as response:
+                  token = json.load(response)["access_token"]
+              print(f"::add-mask::{token}")
+              key_request = urllib.request.Request(
+                  "https://api.tailscale.com/api/v2/tailnet/-/keys",
+                  data=json.dumps({
+                      "capabilities": {"devices": {"create": {
+                          "reusable": False,
+                          "ephemeral": False,
+                          "preauthorized": True,
+                          "tags": [tag],
+                      }}},
+                      "expirySeconds": 3600,
+                      "description": "maillard sidecar",
+                  }).encode(),
+                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                  method="POST",
+              )
+              with urllib.request.urlopen(key_request, timeout=20) as response:
+                  minted = json.load(response)["key"]
+              if not isinstance(minted, str) or not minted or any(c in minted for c in "\r\n"):
+                  raise ValueError("Invalid auth key response")
+              print(f"::add-mask::{minted}")
+              key = minted
+          except Exception as exc:
+              # API response bodies can contain secrets; never print them.
+              reason = f"HTTP {exc.code}" if isinstance(exc, urllib.error.HTTPError) else type(exc).__name__
+              owners = json.dumps({tag: ["autogroup:admin", "tag:ci"]})
+              print(f"::warning::Maillard sidecar key mint failed ({reason}); app deployment continues. "
+                    f"ACL fix: merge {owners} into tagOwners; the OAuth client needs auth_keys write scope and tag:ci.")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"key={key}\n")
+          PY
+
+      - name: Deploy to NAS
+        if: steps.precheck.outputs.enabled == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          MAILLARD_INGEST_SECRET: ${{ secrets.MAILLARD_INGEST_SECRET }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          DEPLOY_SHA: ${{ github.sha }}
+          MAILLARD_TS_AUTHKEY: ${{ steps.sidecar-key.outputs.key }}
+          MAILLARD_TS_TAG: ${{ vars.MAILLARD_TS_TAG || 'tag:maillard' }}
+        with:
+          host: ${{ secrets.NAS_HOST }}
+          port: ${{ secrets.NAS_PORT || 22 }}
+          username: ${{ secrets.NAS_USER }}
+          key: ${{ secrets.NAS_SSH_KEY }}
+          command_timeout: 10m
+          envs: MAILLARD_INGEST_SECRET,GHCR_TOKEN,GHCR_USER,DEPLOY_SHA,MAILLARD_TS_AUTHKEY,MAILLARD_TS_TAG
+          script: |
+            set -euo pipefail
+            cd /volume1/docker/maillard
+            DOCKER="sudo /usr/local/bin/docker"
+
+            # Read-only guard: never interrupt a roast already in progress.
+            if STATUS=$(curl -sf --max-time 5 http://localhost:8080/api/status); then
+              if command -v python3 >/dev/null 2>&1; then
+                ACTIVE=$(printf '%s' "$STATUS" | python3 -c 'import json,sys; print("true" if json.load(sys.stdin).get("roast", {}).get("active") is True else "false")')
+              else
+                ACTIVE=false
+                if printf '%s' "$STATUS" | tr '\n' ' ' | sed -n 's/.*"roast"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p' | grep -Eq '"active"[[:space:]]*:[[:space:]]*true([[:space:]]*[,}]|[[:space:]]*$)'; then
+                  ACTIVE=true
+                fi
+              fi
+              if [ "$ACTIVE" = true ]; then
+                echo "Roast in progress; not restarting"
+                exit 1
+              fi
+            fi
+
+            umask 077
+            touch .env
+            cp .env ".env.bak.$(date +%Y%m%d%H%M%S)"
+            # Timestamped filenames sort newest first; retain five backups.
+            ls -1 .env.bak.* | sort -r | sed '1,5d' | while IFS= read -r backup; do
+              rm -- "$backup"
+            done
+            ENV_TMP=$(mktemp .env.tmp.XXXXXX)
+            trap 'rm -f -- "$ENV_TMP"' EXIT
+            sed -E '/^(export[[:space:]]+)?SUPABASE_/d; /^(export[[:space:]]+)?MAILLARD_(INGEST_SECRET|SITE_URL|AI_AUTO_CONTROL_ENABLED)=/d' .env > "$ENV_TMP"
+            # Ensure appended assignments start on a new line even without a final newline.
+            if [ -s "$ENV_TMP" ] && [ "$(tail -c 1 "$ENV_TMP" | wc -l)" -eq 0 ]; then
+              printf '\n' >> "$ENV_TMP"
+            fi
+            printf 'MAILLARD_SITE_URL=https://roastery.example.com\nMAILLARD_AI_AUTO_CONTROL_ENABLED=false\n' >> "$ENV_TMP"
+            printf 'MAILLARD_INGEST_SECRET=%s\n' "$MAILLARD_INGEST_SECRET" >> "$ENV_TMP"
+            mv -- "$ENV_TMP" .env
+            chmod 600 .env
+
+            echo "$GHCR_TOKEN" | $DOCKER login ghcr.io -u "$GHCR_USER" --password-stdin
+            $DOCKER compose pull maillard
+            $DOCKER compose up -d maillard
+            $DOCKER logout ghcr.io
+
+            HEALTHY=false
+            for attempt in $(seq 1 12); do
+              if HEALTH=$(curl -sf --max-time 5 http://localhost:8080/health) && printf '%s' "$HEALTH" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"healthy"'; then
+                HEALTHY=true
+                break
+              fi
+              if [ "$attempt" -lt 12 ]; then sleep 5; fi
+            done
+            if [ "$HEALTHY" != true ]; then
+              $DOCKER compose logs --tail 50 maillard
+              exit 1
+            fi
+            curl -s --max-time 5 http://localhost:8080/api/version
+            printf '\n'
+
+            # The app is healthy. Sidecar setup is optional and must never fail this deploy.
+            ts_compose() {
+              $DOCKER compose --env-file .env --env-file tailscale/ts.env \
+                -f docker-compose.yml -f docker-compose.tailscale.yml "$@"
+            }
+            deploy_sidecar() {
+              mkdir -p tailscale/run || return 1
+              cat > tailscale/serve.json <<'MAILLARD_TS_SERVE' || return 1
+            {"TCP":{"80":{"TCPForward":"maillard:8080"},"8080":{"TCPForward":"maillard:8080"}}}
+            MAILLARD_TS_SERVE
+              cat > docker-compose.tailscale.yml <<'MAILLARD_TS_COMPOSE' || return 1
+            services:
+              maillard-ts:
+                image: tailscale/tailscale:v1.102.5
+                hostname: maillard
+                restart: unless-stopped
+                environment:
+                  TS_HOSTNAME: maillard
+                  TS_STATE_DIR: /var/lib/tailscale
+                  TS_USERSPACE: "true"
+                  TS_AUTH_ONCE: "true"
+                  TS_AUTHKEY: file:/run/ts/authkey
+                  TS_EXTRA_ARGS: --advertise-tags=${MAILLARD_TS_TAG:-tag:maillard}
+                  TS_SERVE_CONFIG: /config/serve.json
+                  TS_ENABLE_HEALTH_CHECK: "true"
+                  TS_LOCAL_ADDR_PORT: 127.0.0.1:9002
+                volumes:
+                  - tailscale-state:/var/lib/tailscale
+                  - ./tailscale/serve.json:/config/serve.json:ro
+                  - ./tailscale/run:/run/ts:ro
+                depends_on:
+                  - maillard
+
+            volumes:
+              tailscale-state:
+            MAILLARD_TS_COMPOSE
+              # sudo drops exported variables; Compose reads this non-secret file as root.
+              case "${MAILLARD_TS_TAG:-tag:maillard}" in
+                tag:*) ;;
+                *) return 1 ;;
+              esac
+              if printf '%s' "${MAILLARD_TS_TAG:-tag:maillard}" | grep -q '[^a-zA-Z0-9:_-]'; then
+                return 1
+              fi
+              printf 'MAILLARD_TS_TAG=%s\n' "${MAILLARD_TS_TAG:-tag:maillard}" > tailscale/ts.env || return 1
+              TS_CONTAINER=$(ts_compose ps -a -q maillard-ts) || return 1
+              if [ -z "${MAILLARD_TS_AUTHKEY:-}" ] && [ -z "$TS_CONTAINER" ] && \
+                 ! $DOCKER volume inspect maillard_tailscale-state >/dev/null 2>&1; then
+                echo 'Maillard sidecar skipped: no saved state or auth key.'
+                return 0
+              fi
+              if [ -n "${MAILLARD_TS_AUTHKEY:-}" ]; then
+                printf '%s' "$MAILLARD_TS_AUTHKEY" > tailscale/run/authkey || return 1
+                chmod 600 tailscale/run/authkey || return 1
+              fi
+              ts_compose pull maillard-ts || return 1
+              ts_compose up -d --no-deps maillard-ts || return 1
+              for attempt in $(seq 1 12); do
+                if TS_STATUS=$(ts_compose exec -T maillard-ts tailscale status --json 2>/dev/null) && \
+                   printf '%s' "$TS_STATUS" | grep -Eq '"BackendState"[[:space:]]*:[[:space:]]*"Running"'; then
+                  # Use the healthy app's Python; NAS hosts need not have python3 installed.
+                  printf '%s' "$TS_STATUS" | ts_compose exec -T maillard python -c \
+                    'import json,sys; s=json.load(sys.stdin).get("Self", {}); print(json.dumps({"hostname": s.get("HostName"), "DNSName": s.get("DNSName"), "TailscaleIPs": s.get("TailscaleIPs", [])}))' || return 1
+                  return 0
+                fi
+                if [ "$attempt" -lt 12 ]; then sleep 5; fi
+              done
+              return 1
+            }
+            trap 'rm -f -- "$ENV_TMP" tailscale/run/authkey || true' EXIT
+            if deploy_sidecar; then
+              :
+            else
+              ts_compose logs --tail 30 maillard-ts 2>&1 | while IFS= read -r line; do
+                if [ -n "${MAILLARD_TS_AUTHKEY:-}" ]; then
+                  line=${line//"$MAILLARD_TS_AUTHKEY"/[REDACTED]}
+                fi
+                printf '%s\n' "$line"
+              done || true
+              echo '::warning::Maillard sidecar failed to reach Running; app is healthy and deployment continues. Check Tailscale ACLs and sidecar logs.'
+            fi
+            rm -f tailscale/run/authkey || echo '::warning::Could not remove tailscale/run/authkey; remove it on the NAS.'
+            printf '%s deployed %s\n' "$(date -u +%FT%TZ)" "$DEPLOY_SHA" >> deploy.log

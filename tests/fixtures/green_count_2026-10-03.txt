@@ -1,0 +1,13 @@
+# Example physical green count (grams), synthetic data
+Flores Turelelo: 640
+Sumatra Gayo: 1500
+Wush Wush: 1120
+Gera Nano Challa: 410
+Guatemala Gesha: 2200
+Uraga Yabitu Koba: 1360
+Vereda El Paramo: 300
+Vereda San Francisco: 1985
+Yemen Sharqui Haraz: 0
+Peru Gesha: 0
+Yirgacheffe: 0
+Kenya: 0

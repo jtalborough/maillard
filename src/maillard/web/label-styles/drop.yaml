@@ -1,0 +1,26 @@
+id: drop
+name: Drop
+description: "v13 drop label — all black-on-white typography for Zebra ZD-421 thermal transfer"
+layout: drop
+
+colors:
+  background: "#ffffff"
+  text: "#0f0f0f"
+
+canvas:
+  width_inches: 4.0
+  height_inches: 4.0
+  dpi: 300
+
+fonts:
+  heading_family: Impact
+  body_family: Arial
+
+text:
+  brand_name: Example Roastery
+  brand_tagline: Coffee that connects
+  qr_hint: Scan to Cup
+
+brand_variant: primary
+
+qr_enabled: true

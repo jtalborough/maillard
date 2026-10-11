@@ -1,0 +1,64 @@
+id: craft-bw
+name: Craft B&W
+description: Clean black and white with diagonal name block
+layout: craft
+
+colors:
+  background: "#ffffff"
+  name_block_bg: "#000000"
+  name_text: "#ffffff"
+  eyebrow_text: "#ffffff"
+  ghost_b: "rgba(255,255,255,0.10)"
+  body_bg: "#ffffff"
+  spec_label: "#000000"
+  spec_value: "#000000"
+  spec_divider: "#000000"
+  strip_bg: "#000000"
+  strip_label: "#ffffff"
+  strip_value: "#ffffff"
+  strip_divider: "#ffffff"
+  footer_bg: "#ffffff"
+  footer_border: "#000000"
+  logo_border: "#000000"
+  logo_b: "#000000"
+  brand_name: "#000000"
+  brand_tagline: "#000000"
+  qr_hint: "#000000"
+  corner_marks: "#000000"
+
+canvas:
+  width_inches: 4.0
+  height_inches: 4.0
+  dpi: 300
+  border_width: 2
+
+name_block:
+  diagonal_clip: true
+  clip_breakpoint: 0.38
+  ghost_b_enabled: true
+
+fonts:
+  heading_family: Oswald
+  body_family: Space Mono
+
+text:
+  brand_name: Example Roastery
+  brand_tagline: Roasted with Maillard
+  qr_hint: Scan to Cup
+
+fields:
+  eyebrow: "{origin} · {varietal}"
+  specs_left:
+    - {label: Process, source: processing}
+    - {label: Roast, source: roast_level}
+  specs_right:
+    - {label: Roasted, source: roast_date}
+    - {label: Bag Size, source: batch_size_grams, format: "{}g"}
+  strip:
+    - {label: Drop Temp, source: drop_temp, format: "{:.1f}°C"}
+    - {label: Total Time, source: total_time}
+    - {label: DTR, source: dtr, format: "{:.1f}%"}
+    - {label: Varietal, source: varietal}
+
+corner_marks: true
+qr_enabled: true

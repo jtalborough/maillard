@@ -1,0 +1,31 @@
+id: classic
+name: Classic
+description: Clean centered layout with bold name and circled-B logo
+layout: classic
+
+colors:
+  background: "#ffffff"
+  text: "#000000"
+  separator: "#000000"
+  footer_text: "#000000"
+  logo_border: "#000000"
+  logo_b: "#000000"
+  qr_hint: "#000000"
+
+canvas:
+  width_inches: 4.0
+  height_inches: 4.0
+  dpi: 300
+  border_width: 4
+
+fonts:
+  heading_family: Arial
+  body_family: Arial
+
+text:
+  brand_name: Example Roastery
+  brand_tagline: Roasted with Maillard
+  qr_hint: Scan to Cup
+
+corner_marks: false
+qr_enabled: true

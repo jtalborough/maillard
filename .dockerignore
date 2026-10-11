@@ -1,0 +1,41 @@
+# Version control
+.git/
+.gitignore
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Testing & dev tools
+tests/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Documentation & project management
+docs/
+reference/
+mkdocs.yml
+requirements.txt
+
+# Environment & secrets
+.env
+tailscale/run/
+tailscale/ts.env
+*.log
+logs/
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

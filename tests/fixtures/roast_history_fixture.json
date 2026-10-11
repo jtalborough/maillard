@@ -1,0 +1,927 @@
+[
+ {
+  "id": "2f7820",
+  "date": "2026-02-15",
+  "status": "completed",
+  "batch_size_grams": 200,
+  "roast_level": "Light",
+  "charge_temp": 56.0,
+  "drop_time": 20,
+  "drop_temp": 62.8,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 56.0
+   },
+   {
+    "time": 20,
+    "type": "drop",
+    "temp": 62.8
+   }
+  ],
+  "curve_tp_min_bt": [
+   0.1,
+   56.2
+  ],
+  "max_et": 69.2,
+  "n_samples": 14,
+  "cupping_score": null
+ },
+ {
+  "id": "a6bfad",
+  "date": "2026-04-03",
+  "status": "completed",
+  "batch_size_grams": 454,
+  "roast_level": "Light",
+  "charge_temp": 198.8,
+  "drop_time": 537,
+  "drop_temp": 200.2,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 198.8
+   },
+   {
+    "time": 436,
+    "type": "fc_start",
+    "temp": 179.5
+   },
+   {
+    "time": 516,
+    "type": "fc_end",
+    "temp": 190.0
+   },
+   {
+    "time": 537,
+    "type": "drop",
+    "temp": 200.2
+   }
+  ],
+  "curve_tp_min_bt": [
+   41.4,
+   88.0
+  ],
+  "max_et": 195.5,
+  "n_samples": 202,
+  "cupping_score": null
+ },
+ {
+  "id": "a658d1",
+  "date": "2026-03-02",
+  "status": "in_progress",
+  "batch_size_grams": 450,
+  "roast_level": "Light",
+  "charge_temp": 200.2,
+  "drop_time": null,
+  "drop_temp": null,
+  "events": [],
+  "curve_tp_min_bt": null,
+  "max_et": null,
+  "n_samples": 0,
+  "cupping_score": null
+ },
+ {
+  "id": "a81180",
+  "date": "2026-05-19",
+  "status": "completed",
+  "batch_size_grams": 454,
+  "roast_level": "Light",
+  "charge_temp": 194.8,
+  "drop_time": 578,
+  "drop_temp": 205.5,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 194.8
+   },
+   {
+    "time": 40,
+    "type": "turning_point",
+    "temp": 83.8
+   },
+   {
+    "time": 478,
+    "type": "fc_start",
+    "temp": 182.0
+   },
+   {
+    "time": 578,
+    "type": "drop",
+    "temp": 205.5
+   }
+  ],
+  "curve_tp_min_bt": [
+   40.3,
+   83.8
+  ],
+  "max_et": 185.8,
+  "n_samples": 354,
+  "cupping_score": null
+ },
+ {
+  "id": "a4b98f",
+  "date": "2026-02-05",
+  "status": "completed",
+  "batch_size_grams": 200,
+  "roast_level": null,
+  "charge_temp": 162.5,
+  "drop_time": 11,
+  "drop_temp": 232.2,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 162.5
+   },
+   {
+    "time": 0,
+    "type": "dry_end",
+    "temp": 162.6
+   },
+   {
+    "time": 6,
+    "type": "fc_start",
+    "temp": 202.5
+   },
+   {
+    "time": 11,
+    "type": "drop",
+    "temp": 232.2
+   }
+  ],
+  "curve_tp_min_bt": [
+   0.0,
+   162.6
+  ],
+  "max_et": 127.7,
+  "n_samples": 8,
+  "cupping_score": null
+ },
+ {
+  "id": "5f9a58",
+  "date": "2026-03-02",
+  "status": "in_progress",
+  "batch_size_grams": 450,
+  "roast_level": "Light",
+  "charge_temp": 188.2,
+  "drop_time": null,
+  "drop_temp": null,
+  "events": [],
+  "curve_tp_min_bt": null,
+  "max_et": null,
+  "n_samples": 0,
+  "cupping_score": null
+ },
+ {
+  "id": "4054f6",
+  "date": "2026-03-04",
+  "status": "completed",
+  "batch_size_grams": 450,
+  "roast_level": "Medium",
+  "charge_temp": 204.5,
+  "drop_time": 512,
+  "drop_temp": 204.2,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 204.5
+   },
+   {
+    "time": 38,
+    "type": "turning_point",
+    "temp": 88.5
+   },
+   {
+    "time": 221,
+    "type": "dry_end",
+    "temp": 148.8
+   },
+   {
+    "time": 374,
+    "type": "fc_start",
+    "temp": 177.8
+   },
+   {
+    "time": 451,
+    "type": "fc_end",
+    "temp": 189.0
+   },
+   {
+    "time": 512,
+    "type": "drop",
+    "temp": 204.2
+   }
+  ],
+  "curve_tp_min_bt": [
+   38.7,
+   88.5
+  ],
+  "max_et": 194.8,
+  "n_samples": 321,
+  "cupping_score": null
+ },
+ {
+  "id": "4c6f2b",
+  "date": "2026-04-23",
+  "status": "completed",
+  "batch_size_grams": 700,
+  "roast_level": "Light",
+  "charge_temp": 127.0,
+  "drop_time": 715,
+  "drop_temp": 206.2,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 127.0
+   },
+   {
+    "time": 25,
+    "type": "turning_point",
+    "temp": 83.2
+   },
+   {
+    "time": 320,
+    "type": "dry_end",
+    "temp": 141.5
+   },
+   {
+    "time": 562,
+    "type": "fc_start",
+    "temp": 183.5
+   },
+   {
+    "time": 681,
+    "type": "fc_end",
+    "temp": 197.8
+   },
+   {
+    "time": 715,
+    "type": "drop",
+    "temp": 206.2
+   }
+  ],
+  "curve_tp_min_bt": [
+   25.7,
+   83.2
+  ],
+  "max_et": 185.5,
+  "n_samples": 406,
+  "cupping_score": null
+ },
+ {
+  "id": "8bcdcf",
+  "date": "2026-02-10",
+  "status": "completed",
+  "batch_size_grams": 300,
+  "roast_level": null,
+  "charge_temp": 200.0,
+  "drop_time": 612,
+  "drop_temp": 198.0,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 200.0
+   },
+   {
+    "time": 96,
+    "type": "turning_point",
+    "temp": 133.2
+   },
+   {
+    "time": 171,
+    "type": "dry_end",
+    "temp": 149.8
+   },
+   {
+    "time": 409,
+    "type": "fc_start",
+    "temp": 174.2
+   },
+   {
+    "time": 494,
+    "type": "fc_end",
+    "temp": 180.5
+   },
+   {
+    "time": 612,
+    "type": "drop",
+    "temp": 198.0
+   }
+  ],
+  "curve_tp_min_bt": [
+   35.3,
+   107.8
+  ],
+  "max_et": 194.0,
+  "n_samples": 383,
+  "cupping_score": null
+ },
+ {
+  "id": "e2e8f9",
+  "date": "2026-04-07",
+  "status": "completed",
+  "batch_size_grams": 808,
+  "roast_level": "Light",
+  "charge_temp": 199.8,
+  "drop_time": 344498,
+  "drop_temp": 27.2,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 199.8
+   },
+   {
+    "time": 45,
+    "type": "turning_point",
+    "temp": 95.8
+   },
+   {
+    "time": 344498,
+    "type": "drop",
+    "temp": 27.2
+   }
+  ],
+  "curve_tp_min_bt": [
+   45.9,
+   95.8
+  ],
+  "max_et": 186.0,
+  "n_samples": 108,
+  "cupping_score": null
+ },
+ {
+  "id": "6db6d9",
+  "date": "2026-02-15",
+  "status": "in_progress",
+  "batch_size_grams": 450,
+  "roast_level": "Medium",
+  "charge_temp": 203.2,
+  "drop_time": null,
+  "drop_temp": null,
+  "events": [],
+  "curve_tp_min_bt": null,
+  "max_et": null,
+  "n_samples": 0,
+  "cupping_score": null
+ },
+ {
+  "id": "430087",
+  "date": "2026-02-22",
+  "status": "completed",
+  "batch_size_grams": 450,
+  "roast_level": "Medium-Light",
+  "charge_temp": 198.2,
+  "drop_time": 582,
+  "drop_temp": 200.8,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 198.2
+   },
+   {
+    "time": 416,
+    "type": "dry_end",
+    "temp": 171.8
+   },
+   {
+    "time": 465,
+    "type": "fc_start",
+    "temp": 182.2
+   },
+   {
+    "time": 520,
+    "type": "fc_end",
+    "temp": 190.2
+   },
+   {
+    "time": 582,
+    "type": "drop",
+    "temp": 200.8
+   }
+  ],
+  "curve_tp_min_bt": [
+   35.8,
+   84.5
+  ],
+  "max_et": 191.2,
+  "n_samples": 366,
+  "cupping_score": null
+ },
+ {
+  "id": "9f955a",
+  "date": "2026-03-16",
+  "status": "completed",
+  "batch_size_grams": 500,
+  "roast_level": "Medium-Light",
+  "charge_temp": 196.8,
+  "drop_time": 546,
+  "drop_temp": 200.0,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 196.8
+   },
+   {
+    "time": 36,
+    "type": "turning_point",
+    "temp": 81.5
+   },
+   {
+    "time": 315,
+    "type": "dry_end",
+    "temp": 157.8
+   },
+   {
+    "time": 434,
+    "type": "fc_start",
+    "temp": 181.8
+   },
+   {
+    "time": 503,
+    "type": "fc_end",
+    "temp": 191.5
+   },
+   {
+    "time": 546,
+    "type": "drop",
+    "temp": 200.0
+   }
+  ],
+  "curve_tp_min_bt": [
+   36.8,
+   81.5
+  ],
+  "max_et": 196.5,
+  "n_samples": 341,
+  "cupping_score": null
+ },
+ {
+  "id": "27b50e",
+  "date": "2026-03-25",
+  "status": "completed",
+  "batch_size_grams": 450,
+  "roast_level": "Medium",
+  "charge_temp": 198.5,
+  "drop_time": 554,
+  "drop_temp": 206.0,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 198.5
+   },
+   {
+    "time": 284,
+    "type": "dry_end",
+    "temp": 155.5
+   },
+   {
+    "time": 433,
+    "type": "fc_start",
+    "temp": 184.5
+   },
+   {
+    "time": 496,
+    "type": "fc_end",
+    "temp": 195.0
+   },
+   {
+    "time": 554,
+    "type": "drop",
+    "temp": 206.0
+   }
+  ],
+  "curve_tp_min_bt": [
+   40.2,
+   100.8
+  ],
+  "max_et": 199.5,
+  "n_samples": 342,
+  "cupping_score": null
+ },
+ {
+  "id": "d7893e",
+  "date": "2026-02-06",
+  "status": "completed",
+  "batch_size_grams": null,
+  "roast_level": null,
+  "charge_temp": 22.8,
+  "drop_time": 203,
+  "drop_temp": 71.2,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 22.8
+   },
+   {
+    "time": 203,
+    "type": "turning_point",
+    "temp": 71.2
+   },
+   {
+    "time": 203,
+    "type": "drop",
+    "temp": 71.2
+   }
+  ],
+  "curve_tp_min_bt": [
+   0.0,
+   22.8
+  ],
+  "max_et": 66.3,
+  "n_samples": 136,
+  "cupping_score": null
+ },
+ {
+  "id": "f69589",
+  "date": "2026-03-25",
+  "status": "completed",
+  "batch_size_grams": 454,
+  "roast_level": "Light",
+  "charge_temp": 199.5,
+  "drop_time": 524,
+  "drop_temp": 205.0,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 199.5
+   },
+   {
+    "time": 34,
+    "type": "turning_point",
+    "temp": 85.0
+   },
+   {
+    "time": 226,
+    "type": "dry_end",
+    "temp": 152.8
+   },
+   {
+    "time": 378,
+    "type": "fc_start",
+    "temp": 179.2
+   },
+   {
+    "time": 484,
+    "type": "fc_end",
+    "temp": 194.5
+   },
+   {
+    "time": 524,
+    "type": "drop",
+    "temp": 205.0
+   }
+  ],
+  "curve_tp_min_bt": [
+   34.5,
+   85.0
+  ],
+  "max_et": 196.0,
+  "n_samples": 324,
+  "cupping_score": null
+ },
+ {
+  "id": "8e36e0",
+  "date": "2026-04-11",
+  "status": "completed",
+  "batch_size_grams": 800,
+  "roast_level": "Light",
+  "charge_temp": 199.8,
+  "drop_time": 884,
+  "drop_temp": 163.8,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 199.8
+   },
+   {
+    "time": 44,
+    "type": "turning_point",
+    "temp": 82.5
+   },
+   {
+    "time": 335,
+    "type": "dry_end",
+    "temp": 137.2
+   },
+   {
+    "time": 655,
+    "type": "fc_start",
+    "temp": 182.2
+   },
+   {
+    "time": 767,
+    "type": "fc_end",
+    "temp": 196.2
+   },
+   {
+    "time": 884,
+    "type": "drop",
+    "temp": 163.8
+   }
+  ],
+  "curve_tp_min_bt": [
+   44.0,
+   82.5
+  ],
+  "max_et": 176.0,
+  "n_samples": 562,
+  "cupping_score": null
+ },
+ {
+  "id": "1079a6",
+  "date": "2026-03-16",
+  "status": "completed",
+  "batch_size_grams": 500,
+  "roast_level": "Medium-Light",
+  "charge_temp": 197.8,
+  "drop_time": 520,
+  "drop_temp": 201.5,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 197.8
+   },
+   {
+    "time": 240,
+    "type": "dry_end",
+    "temp": 158.8
+   },
+   {
+    "time": 370,
+    "type": "fc_start",
+    "temp": 185.2
+   },
+   {
+    "time": 455,
+    "type": "fc_end",
+    "temp": 195.8
+   },
+   {
+    "time": 520,
+    "type": "drop",
+    "temp": 201.5
+   }
+  ],
+  "curve_tp_min_bt": [
+   33.6,
+   105.5
+  ],
+  "max_et": 199.8,
+  "n_samples": 324,
+  "cupping_score": null
+ },
+ {
+  "id": "464fb7",
+  "date": "2026-05-05",
+  "status": "completed",
+  "batch_size_grams": 700,
+  "roast_level": "Light",
+  "charge_temp": 200.0,
+  "drop_time": 868,
+  "drop_temp": 170.5,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 200.0
+   },
+   {
+    "time": 440,
+    "type": "dry_end",
+    "temp": 150.0
+   },
+   {
+    "time": 690,
+    "type": "fc_start",
+    "temp": 187.2
+   },
+   {
+    "time": 776,
+    "type": "fc_end",
+    "temp": 196.8
+   },
+   {
+    "time": 868,
+    "type": "drop",
+    "temp": 170.5
+   }
+  ],
+  "curve_tp_min_bt": [
+   49.9,
+   80.5
+  ],
+  "max_et": 188.8,
+  "n_samples": 533,
+  "cupping_score": null
+ },
+ {
+  "id": "f6de76",
+  "date": "2026-04-30",
+  "status": "completed",
+  "batch_size_grams": 700,
+  "roast_level": "Light",
+  "charge_temp": 199.2,
+  "drop_time": 756,
+  "drop_temp": 189.0,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 199.2
+   },
+   {
+    "time": 44,
+    "type": "turning_point",
+    "temp": 78.0
+   },
+   {
+    "time": 454,
+    "type": "dry_end",
+    "temp": 157.5
+   },
+   {
+    "time": 579,
+    "type": "fc_start",
+    "temp": 179.8
+   },
+   {
+    "time": 647,
+    "type": "fc_end",
+    "temp": 187.0
+   },
+   {
+    "time": 756,
+    "type": "drop",
+    "temp": 189.0
+   }
+  ],
+  "curve_tp_min_bt": [
+   44.1,
+   78.0
+  ],
+  "max_et": 193.2,
+  "n_samples": 467,
+  "cupping_score": null
+ },
+ {
+  "id": "dab7ab",
+  "date": "2026-04-07",
+  "status": "in_progress",
+  "batch_size_grams": 454,
+  "roast_level": "Light",
+  "charge_temp": 204.2,
+  "drop_time": null,
+  "drop_temp": null,
+  "events": [],
+  "curve_tp_min_bt": null,
+  "max_et": null,
+  "n_samples": 0,
+  "cupping_score": null
+ },
+ {
+  "id": "ec3962",
+  "date": "2026-02-15",
+  "status": "completed",
+  "batch_size_grams": 450,
+  "roast_level": "Medium",
+  "charge_temp": 200.0,
+  "drop_time": 1109,
+  "drop_temp": 199.8,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 200.0
+   },
+   {
+    "time": 221,
+    "type": "dry_end",
+    "temp": 141.5
+   },
+   {
+    "time": 905,
+    "type": "fc_start",
+    "temp": 194.8
+   },
+   {
+    "time": 1109,
+    "type": "drop",
+    "temp": 199.8
+   }
+  ],
+  "curve_tp_min_bt": [
+   42.2,
+   105.0
+  ],
+  "max_et": 190.2,
+  "n_samples": 684,
+  "cupping_score": null
+ },
+ {
+  "id": "643b79",
+  "date": "2026-03-11",
+  "status": "completed",
+  "batch_size_grams": 450,
+  "roast_level": "Medium-Light",
+  "charge_temp": 197.8,
+  "drop_time": 477,
+  "drop_temp": 200.8,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 197.8
+   },
+   {
+    "time": 28,
+    "type": "turning_point",
+    "temp": 99.8
+   },
+   {
+    "time": 271,
+    "type": "dry_end",
+    "temp": 159.8
+   },
+   {
+    "time": 366,
+    "type": "fc_start",
+    "temp": 181.5
+   },
+   {
+    "time": 428,
+    "type": "fc_end",
+    "temp": 191.8
+   },
+   {
+    "time": 477,
+    "type": "drop",
+    "temp": 200.8
+   }
+  ],
+  "curve_tp_min_bt": [
+   28.3,
+   99.8
+  ],
+  "max_et": 193.0,
+  "n_samples": 300,
+  "cupping_score": null
+ },
+ {
+  "id": "a84dc1",
+  "date": "2026-02-22",
+  "status": "completed",
+  "batch_size_grams": 450,
+  "roast_level": "Medium-Light",
+  "charge_temp": 195.8,
+  "drop_time": 706,
+  "drop_temp": 203.5,
+  "events": [
+   {
+    "time": 0,
+    "type": "charge",
+    "temp": 195.8
+   },
+   {
+    "time": 310,
+    "type": "dry_end",
+    "temp": 147.8
+   },
+   {
+    "time": 530,
+    "type": "fc_start",
+    "temp": 185.5
+   },
+   {
+    "time": 590,
+    "type": "fc_end",
+    "temp": 194.0
+   },
+   {
+    "time": 706,
+    "type": "drop",
+    "temp": 203.5
+   }
+  ],
+  "curve_tp_min_bt": [
+   39.1,
+   88.5
+  ],
+  "max_et": 178.5,
+  "n_samples": 440,
+  "cupping_score": null
+ }
+]

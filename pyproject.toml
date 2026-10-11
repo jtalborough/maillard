@@ -1,0 +1,125 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "maillard"
+version = "1.0.0"
+description = "AI-powered coffee roasting control system for Kaleido M10 - standalone alternative to Artisan"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [
+    { name = "Maillard Contributors" }
+]
+keywords = ["coffee", "roasting", "ai", "mcp", "kaleido", "roaster-control"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Home Automation",
+]
+
+dependencies = [
+    "websockets>=13.0,<16",
+    "mcp>=1.26.0,<2",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "beanie>=1.26.0,<2",
+    "motor>=3.6.0",
+    "python-statemachine>=2.5.0",
+    "python-dotenv>=1.0.0",
+    "pillow>=10.0.0",
+    "qrcode[pil]>=8.0",
+    "pyyaml>=6.0",
+    "httpx>=0.28.0",
+]
+
+[project.optional-dependencies]
+agent = [
+    "anthropic>=0.70.0,<1",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.28.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "pyright>=1.1.0",
+    "mongomock-motor>=0.0.34",
+]
+
+[project.scripts]
+maillard = "maillard.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/jtalborough/maillard"
+Repository = "https://github.com/jtalborough/maillard"
+Documentation = "https://github.com/jtalborough/maillard#readme"
+Issues = "https://github.com/jtalborough/maillard/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maillard"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["maillard"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = [
+    "mcp.*",
+    "statemachine.*",
+    "motor.*",
+    "mongomock_motor.*",
+]
+ignore_missing_imports = true
+
+[tool.pyright]
+pythonVersion = "3.12"
+pythonPlatform = "All"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "ignore::DeprecationWarning:statemachine.*:",
+]

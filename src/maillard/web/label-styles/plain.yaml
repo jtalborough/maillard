@@ -1,0 +1,25 @@
+id: plain
+name: Plain
+description: "Drop-style label with no branding — coffee details fill the footer"
+layout: drop
+
+colors:
+  background: "#ffffff"
+  text: "#0f0f0f"
+
+canvas:
+  width_inches: 4.0
+  height_inches: 4.0
+  dpi: 300
+
+fonts:
+  heading_family: Impact
+  body_family: Arial
+
+text:
+  brand_name: ""
+  brand_tagline: ""
+  qr_hint: ""
+
+qr_enabled: false
+logo_enabled: false

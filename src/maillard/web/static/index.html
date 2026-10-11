@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Maillard — Roast Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3"></script>
+  <style>
+    body { background: #0f172a; color: #e2e8f0; font-family: 'SF Mono', 'Fira Code', monospace; }
+    .gauge { font-variant-numeric: tabular-nums; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 0.75rem; }
+    .event-btn { transition: all 0.15s; }
+    .event-btn:hover:not(:disabled) { transform: translateY(-1px); }
+    .event-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #emergency-stop { animation: pulse-red 2s infinite; }
+    @keyframes pulse-red { 0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); } 50% { box-shadow: 0 0 0 8px rgba(239,68,68,0); } }
+    .alert-banner { animation: slideIn 0.3s ease-out; }
+    @keyframes slideIn { from { transform: translateY(-100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    .log-entry { animation: fadeIn 0.2s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .connection-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .dot-connected { background: #22c55e; }
+    .dot-disconnected { background: #ef4444; }
+    .dot-connecting { background: #eab308; animation: blink 1s infinite; }
+    @keyframes blink { 50% { opacity: 0.3; } }
+    .ai-active { border-color: #7c3aed !important; box-shadow: 0 0 12px rgba(124,58,237,0.15); }
+    .ai-pulse { animation: aiPulse 0.5s ease-out; }
+    @keyframes aiPulse { 0% { background-color: rgba(124,58,237,0.2); } 100% { background-color: transparent; } }
+    .ai-mode-active { background: #7c3aed !important; color: white !important; }
+    .ai-applied { color: #4ade80; }
+    /* Drawer */
+    #side-drawer { transition: transform 0.2s ease-out; }
+  </style>
+</head>
+<body class="min-h-screen p-4">
+
+  <!-- Alert Banner -->
+  <div id="alert-banner" class="hidden fixed top-0 left-0 right-0 z-50 p-3 text-center font-bold text-white alert-banner"></div>
+
+  <!-- Header -->
+  <header class="flex items-center justify-between mb-4">
+    <div class="flex items-center gap-3">
+      <h1 class="text-xl font-bold text-amber-400">MAILLARD</h1>
+      <span id="ws-status" class="flex items-center gap-1 text-xs text-slate-400">
+        <span class="connection-dot dot-disconnected" id="ws-dot"></span>
+        <span id="ws-label">WS: off</span>
+      </span>
+      <span id="roaster-status" class="flex items-center gap-1 text-xs text-slate-400">
+        <span class="connection-dot dot-disconnected" id="roaster-dot"></span>
+        <span id="roaster-label">Roaster: off</span>
+      </span>
+      <button id="btn-connect" onclick="Roast.doConnect()"
+              class="text-xs bg-green-700 hover:bg-green-600 text-white px-2 py-0.5 rounded">
+        Connect
+      </button>
+      <button id="btn-voice" onclick="App.toggleVoice()"
+              class="text-xs bg-slate-700 hover:bg-slate-600 text-white px-2 py-0.5 rounded"
+              title="Toggle voice announcements">
+        Voice: ON
+      </button>
+      <!-- Nav buttons -->
+      <div class="flex gap-1 ml-4 border-l border-slate-700 pl-4">
+        <button id="nav-coffees" onclick="App.showPanel('coffees')"
+                class="text-xs px-3 py-1 rounded font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">Coffees</button>
+        <button id="nav-profiles" onclick="App.showPanel('profiles')"
+                class="text-xs px-3 py-1 rounded font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">Profiles</button>
+        <button id="nav-inventory" onclick="App.showPanel('inventory')" class="text-xs px-3 py-1 rounded font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">Inventory</button>
+        <button id="nav-history" onclick="App.showPanel('history')"
+                class="text-xs px-3 py-1 rounded font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">History</button>
+      </div>
+    </div>
+    <div class="flex items-center gap-6 gauge text-sm">
+      <div><span class="text-slate-400">BT</span> <span id="val-bt" class="text-lg font-bold text-red-400">—</span><span class="text-slate-500">°C</span></div>
+      <div><span class="text-slate-400">ET</span> <span id="val-et" class="text-lg font-bold text-blue-400">—</span><span class="text-slate-500">°C</span></div>
+      <div><span class="text-slate-400">RoR</span> <span id="val-ror" class="text-lg font-bold text-green-400">—</span><span class="text-slate-500">°/m</span></div>
+      <div><span class="text-slate-400">Time</span> <span id="val-time" class="text-lg font-bold text-slate-200">00:00</span></div>
+      <div><span class="text-slate-400">Phase</span> <span id="val-phase" class="text-lg font-bold text-amber-300">IDLE</span></div>
+      <div><span class="text-slate-400">Heat</span> <span id="val-heat" class="text-lg font-bold text-orange-400">—</span><span class="text-slate-500">%</span></div>
+      <div title="Actual BT minus planned BT"><span class="text-slate-400">vs Plan</span> <span id="val-plan-delta" class="text-lg font-bold text-slate-400">—</span><span class="text-slate-500">°C</span> <span id="val-plan-next" class="text-[11px] text-slate-500"></span></div>
+    </div>
+  </header>
+
+  <!-- Chart -->
+  <div class="card p-4 mb-4" style="height: 600px;">
+    <canvas id="roast-chart"></canvas>
+  </div>
+
+  <!-- Controls + Events + AI + Log Row -->
+  <div class="grid grid-cols-4 gap-4 mb-4">
+
+    <!-- Controls -->
+    <div class="card p-4">
+      <h2 class="text-sm font-semibold text-slate-400 mb-3">CONTROLS</h2>
+      <div class="space-y-3">
+        <div>
+          <label class="flex justify-between text-xs text-slate-400 mb-1">
+            <span>Heat</span><span id="heat-val">0%</span>
+          </label>
+          <input type="range" id="ctrl-heat" min="0" max="100" value="0"
+                 class="w-full h-2 rounded-lg appearance-none cursor-pointer accent-orange-500 bg-slate-700">
+        </div>
+        <div>
+          <label class="flex justify-between text-xs text-slate-400 mb-1">
+            <span>Fan</span><span id="fan-val">0%</span>
+          </label>
+          <input type="range" id="ctrl-fan" min="0" max="100" value="0"
+                 class="w-full h-2 rounded-lg appearance-none cursor-pointer accent-sky-500 bg-slate-700">
+        </div>
+        <div>
+          <label class="flex justify-between text-xs text-slate-400 mb-1">
+            <span>Drum</span><span id="drum-val">0%</span>
+          </label>
+          <input type="range" id="ctrl-drum" min="0" max="100" value="0"
+                 class="w-full h-2 rounded-lg appearance-none cursor-pointer accent-emerald-500 bg-slate-700">
+        </div>
+        <div class="pt-2 border-t border-slate-700">
+          <div class="flex gap-2">
+            <input type="number" id="preheat-temp" placeholder="200" value="200"
+                   class="w-20 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm text-center">
+            <button id="btn-preheat" onclick="Roast.doPreheat()"
+                    class="flex-1 bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium py-1 px-3 rounded event-btn">
+              Preheat
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Events -->
+    <div class="card p-4">
+      <h2 class="text-sm font-semibold text-slate-400 mb-3">EVENTS</h2>
+      <div class="mb-3 space-y-1">
+        <div class="text-xs text-slate-400 mb-2"><span id="charge-drop-info">No presale drop selected</span> <button onclick="Inventory.clearDrop()" class="underline">Clear drop</button></div>
+        <select id="coffee-select" onchange="Roast.onCoffeeChange()"
+                class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs">
+          <option value="">Select coffee...</option>
+        </select>
+        <select id="profile-select" onchange="Roast.onProfileChange()"
+                class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs">
+          <option value="">Select profile...</option>
+        </select>
+        <div class="flex gap-1">
+          <input type="number" id="batch-weight" placeholder="Weight (g)" value="1200" max="1200"
+                 onchange="Roast.hideRecommendation(); Roast.previewPlan()"
+                 class="w-1/2 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-center">
+          <select id="roast-level" onchange="Roast.hideRecommendation()" class="w-1/2 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs">
+            <option value="">Target level...</option>
+            <option value="light">Light</option>
+            <option value="medium-light">Medium-Light</option>
+            <option value="medium">Medium</option>
+            <option value="medium-dark">Medium-Dark</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+        <div id="plan-summary" class="text-[11px] text-amber-300/90 leading-snug py-0.5">No plan selected (roast will be logged without a plan)</div>
+        <div id="plan-warnings" role="alert" class="hidden border border-amber-500 bg-amber-950 text-amber-200 rounded p-3 text-sm whitespace-pre-line"></div>
+        <button onclick="Roast.requestRecommendation()"
+                class="w-full text-xs bg-violet-700 hover:bg-violet-600 text-white py-1.5 rounded mt-1">
+          Get AI Recommendation
+        </button>
+      </div>
+      <!-- AI Recommendation Card (hidden until coffee selected) -->
+      <div id="recommendation-card" class="hidden mb-3 p-2 bg-slate-800 border border-violet-700/50 rounded">
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-xs font-semibold text-violet-400">AI RECOMMENDATION</span>
+          <span id="rec-confidence" class="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-700 text-slate-400">—</span>
+        </div>
+        <div id="rec-loading" class="hidden text-xs text-slate-500 italic py-1">Analyzing...</div>
+        <div id="rec-content" class="hidden">
+          <div class="flex items-center gap-3 text-xs mb-1">
+            <span class="text-slate-400">Charge:</span>
+            <span id="rec-charge" class="font-bold text-amber-400">—°C</span>
+            <span class="text-slate-600">|</span>
+            <span class="text-slate-400">H:</span><span id="rec-heat" class="text-orange-400">—%</span>
+            <span class="text-slate-400">F:</span><span id="rec-fan" class="text-sky-400">—%</span>
+            <span class="text-slate-400">D:</span><span id="rec-drum" class="text-emerald-400">—%</span>
+          </div>
+          <div id="rec-reasoning" class="text-[11px] text-slate-400 italic mb-1.5 leading-snug"></div>
+          <button onclick="Roast.applyRecommendation()"
+                  class="w-full text-xs bg-violet-700 hover:bg-violet-600 text-white py-1 rounded">
+            Apply Settings
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-2">
+        <button onclick="Roast.doCharge()" id="btn-charge"
+                class="bg-green-700 hover:bg-green-600 text-white text-sm font-medium py-2 px-3 rounded event-btn">
+          Charge
+        </button>
+        <button onclick="Roast.doEvent('turning_point')" id="btn-tp"
+                class="bg-slate-600 hover:bg-slate-500 text-white text-sm font-medium py-2 px-3 rounded event-btn" disabled>
+          Turning Pt
+        </button>
+        <button onclick="Roast.doEvent('dry_end')" id="btn-dry"
+                class="bg-yellow-700 hover:bg-yellow-600 text-white text-sm font-medium py-2 px-3 rounded event-btn" disabled>
+          Dry End
+        </button>
+        <button onclick="Roast.doEvent('first_crack')" id="btn-fc"
+                class="bg-orange-700 hover:bg-orange-600 text-white text-sm font-medium py-2 px-3 rounded event-btn" disabled>
+          First Crack
+        </button>
+        <button onclick="Roast.doEvent('fc_end')" id="btn-fce"
+                class="bg-orange-800 hover:bg-orange-700 text-white text-sm font-medium py-2 px-3 rounded event-btn" disabled>
+          FC End
+        </button>
+        <button onclick="Roast.doDrop()" id="btn-drop"
+                class="bg-red-700 hover:bg-red-600 text-white text-sm font-medium py-2 px-3 rounded event-btn" disabled>
+          Drop
+        </button>
+      </div>
+      <div class="mt-3 pt-3 border-t border-slate-700">
+        <button id="btn-cooling" onclick="Roast.toggleCooling()"
+                class="w-full bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-bold py-2 rounded-lg mb-2">
+          Cooling Fan: OFF
+        </button>
+        <button id="emergency-stop" onclick="Roast.doEmergencyStop()"
+                class="w-full bg-red-600 hover:bg-red-500 text-white text-lg font-bold py-3 rounded-lg">
+          EMERGENCY STOP
+        </button>
+        <button id="btn-new-roast" onclick="Roast.resetForNewRoast()"
+                class="w-full bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-bold py-2 rounded-lg mt-2 hidden">
+          New Roast
+        </button>
+      </div>
+    </div>
+
+    <!-- AI Roastmaster -->
+    <div class="card p-4 flex flex-col" id="ai-panel">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold text-slate-400">AI ROASTMASTER</h2>
+        <span id="ai-model" class="text-xs text-slate-600">haiku</span>
+      </div>
+      <div class="flex gap-1 mb-3">
+        <button onclick="Roast.setAIMode('auto')" id="ai-btn-auto"
+                class="flex-1 text-xs py-1 px-2 rounded bg-slate-700 text-slate-400 hover:bg-slate-600 transition-colors">
+          Auto
+        </button>
+        <button onclick="Roast.setAIMode('suggest')" id="ai-btn-suggest"
+                class="flex-1 text-xs py-1 px-2 rounded bg-slate-700 text-slate-400 hover:bg-slate-600 transition-colors">
+          Suggest
+        </button>
+        <button onclick="Roast.setAIMode('off')" id="ai-btn-off"
+                class="flex-1 text-xs py-1 px-2 rounded bg-violet-700 text-white">
+          Off
+        </button>
+      </div>
+      <div id="ai-reasoning" class="text-xs text-slate-400 italic mb-3 min-h-[2.5rem]">
+        AI advisor inactive
+      </div>
+      <div id="ai-suggestions" class="space-y-2 flex-1"></div>
+      <div id="ai-transcript" class="mt-3 max-h-56 overflow-y-auto space-y-2 text-xs border-t border-slate-800 pt-3">
+        <div class="text-slate-500 italic">No AI transcript yet.</div>
+      </div>
+      <form id="ai-message-form" onsubmit="Roast.sendAIMessage(event)" class="mt-3 flex gap-2">
+        <input id="ai-message-input" type="text" maxlength="1000"
+               class="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-violet-600"
+               placeholder="Tell the AI what you see, hear, or smell">
+        <button type="submit"
+                class="text-xs bg-violet-700 hover:bg-violet-600 text-white px-3 py-1 rounded">
+          Send
+        </button>
+      </form>
+      <details class="mt-3 text-xs border-t border-slate-800 pt-2">
+        <summary onclick="Roast.refreshAIPrompt()" class="cursor-pointer text-slate-400 hover:text-slate-200">
+          Prompt context
+        </summary>
+        <pre id="ai-prompt-snapshot" class="mt-2 max-h-56 overflow-y-auto whitespace-pre-wrap text-[11px] text-slate-500 bg-slate-950 border border-slate-800 rounded p-2">No prompt built yet.</pre>
+      </details>
+      <div id="ai-ask" class="hidden mt-2 p-2 bg-yellow-900/30 border border-yellow-700/50 rounded text-xs text-yellow-300"></div>
+    </div>
+
+    <!-- Event Log -->
+    <div class="card p-4 flex flex-col">
+      <h2 class="text-sm font-semibold text-slate-400 mb-3">EVENT LOG</h2>
+      <div id="event-log" class="flex-1 overflow-y-auto space-y-1 text-xs max-h-64">
+        <div class="text-slate-500 italic">Waiting for events...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Side Drawer (for Coffees, Profiles, History) -->
+  <div id="side-drawer" class="hidden fixed top-0 right-0 h-full bg-slate-900 border-l border-slate-700 z-40 flex flex-col shadow-2xl" style="width: 480px;">
+    <div class="flex items-center justify-between px-4 py-3 border-b border-slate-700">
+      <h2 id="drawer-title" class="text-sm font-semibold text-amber-400">Panel</h2>
+      <button onclick="App.closeDrawer()" class="text-slate-400 hover:text-slate-200 text-lg">&times;</button>
+    </div>
+    <div id="drawer-body" class="flex-1 overflow-y-auto p-4"></div>
+  </div>
+
+  <!-- Version footer -->
+  <div id="app-version" class="fixed bottom-2 right-3 text-xs text-slate-600"></div>
+  <script>
+    fetch('/api/version').then(r=>r.json()).then(d=>{
+      const v = d.git_sha && d.git_sha !== 'unknown' ? d.version+'+'+d.git_sha.slice(0,7) : d.version;
+      document.getElementById('app-version').textContent = 'v'+v;
+    }).catch(()=>{});
+  </script>
+
+  <!-- JS Modules -->
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+  <script src="js/roast.js"></script>
+  <script src="js/inventory.js"></script>
+  <script src="js/coffees.js"></script>
+  <script src="js/profiles.js"></script>
+  <script src="js/history.js"></script>
+  <script src="js/cuppings.js"></script>
+
+</body>
+</html>
