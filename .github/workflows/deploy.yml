@@ -13,6 +13,8 @@ permissions:
 
 jobs:
   docker:
+    # Only the canonical repo publishes images; forks and PRs never run this.
+    if: github.repository_owner == 'jtalborough' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       image-tag: ${{ steps.meta.outputs.tags }}
@@ -76,7 +78,7 @@ jobs:
   deploy:
     needs: docker
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.repository_owner == 'jtalborough' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: read
