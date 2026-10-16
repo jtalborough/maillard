@@ -310,6 +310,22 @@ const Roast = {
 
     App.roastActive = roast.active || false;
     const roastState = roast.state || '';
+    // Single-screen roasting layout while a roast is running
+    const wasRoasting = document.body.classList.contains('roasting');
+    const nowRoasting = roastState === 'roasting';
+    document.body.classList.toggle('roasting', nowRoasting);
+    if (wasRoasting !== nowRoasting && this.chart) setTimeout(() => this.chart.resize(), 50);
+    const dd = document.getElementById('detected-drop');
+    if (dd) {
+      if (nowRoasting && roast.detected_drop) {
+        document.getElementById('detected-drop-time').textContent = App.formatTime(roast.detected_drop.time_seconds);
+        document.getElementById('detected-drop-temp').textContent = Number(roast.detected_drop.temp).toFixed(1);
+        if (dd.classList.contains('hidden')) App.speak('Drop detected. Finish the roast when ready.', true);
+        dd.classList.remove('hidden');
+      } else {
+        dd.classList.add('hidden');
+      }
+    }
     const isPreheating = roastState === 'preheating' || roastState === 'ready_to_charge';
     if (roast.elapsed_seconds != null) document.getElementById('val-time').textContent = App.formatTime(roast.elapsed_seconds);
     if (roast.phase) document.getElementById('val-phase').textContent = roast.phase;
@@ -647,11 +663,17 @@ const Roast = {
       btn.className = this.coolingOn
         ? 'w-full bg-cyan-500 hover:bg-cyan-400 text-white text-sm font-bold py-2 rounded-lg mb-2'
         : 'w-full bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-bold py-2 rounded-lg mb-2';
-      App.logEvent(this.coolingOn ? 'Cooling fan ON' : 'Cooling fan OFF', 'text-cyan-400');
+      App.logEvent((this.coolingOn ? 'Cooling fan ON' : 'Cooling fan OFF') + (data.confirmed === false ? ' (sent, roaster did not confirm)' : ''), 'text-cyan-400');
       if (this.coolingOn) App.speak('Cooling fan on.');
     } else {
       this.coolingOn = !this.coolingOn;
     }
+  },
+
+  async dismissDetectedDrop() {
+    await apiPost('/api/drop/detected/dismiss');
+    document.getElementById('detected-drop').classList.add('hidden');
+    App.logEvent('Detected drop dismissed', 'text-slate-400');
   },
 
   async doDrop() {
@@ -905,6 +927,7 @@ const Roast = {
     this._lastAISuggestion = {
       heat: msg.suggested_heat,
       fan: msg.suggested_fan,
+      drum: msg.suggested_drum,
       event: msg.suggested_event,
       drop: !!msg.drop,
     };
@@ -938,6 +961,19 @@ const Roast = {
       container.appendChild(div);
     }
 
+    if (msg.suggested_drum != null) {
+      const div = document.createElement('div');
+      div.className = 'flex items-center justify-between';
+      if (msg.auto_applied) {
+        div.innerHTML = `<span class="text-xs ai-applied">Applied: Drum &rarr; ${msg.suggested_drum}%</span>`;
+      } else {
+        div.innerHTML = `<span class="text-xs text-slate-300">Drum &rarr; ${msg.suggested_drum}%</span>
+          <button onclick="Roast.applyAISuggestion({drum:${msg.suggested_drum}})"
+                  class="text-xs bg-violet-700 hover:bg-violet-600 text-white px-2 py-0.5 rounded">Apply</button>`;
+      }
+      container.appendChild(div);
+    }
+
     if (msg.suggested_event) {
       const label = msg.suggested_event.replace(/_/g, ' ');
       const div = document.createElement('div');
@@ -958,7 +994,7 @@ const Roast = {
       App.speak('Drop recommended! End the roast now.', true);
     }
 
-    if (!msg.auto_applied && (msg.suggested_heat != null || msg.suggested_fan != null || msg.suggested_event || msg.drop)) {
+    if (!msg.auto_applied && (msg.suggested_heat != null || msg.suggested_fan != null || msg.suggested_drum != null || msg.suggested_event || msg.drop)) {
       const div = document.createElement('div');
       div.className = 'flex gap-2 justify-end';
       div.innerHTML = `
@@ -974,9 +1010,11 @@ const Roast = {
       if (msg.auto_applied) {
         if (msg.suggested_heat != null) parts.push(`Heat set to ${msg.suggested_heat} percent`);
         if (msg.suggested_fan != null) parts.push(`Fan set to ${msg.suggested_fan} percent`);
+        if (msg.suggested_drum != null) parts.push(`Drum set to ${msg.suggested_drum} percent`);
       } else {
         if (msg.suggested_heat != null) parts.push(`Suggests heat ${msg.suggested_heat} percent`);
         if (msg.suggested_fan != null) parts.push(`Suggests fan ${msg.suggested_fan} percent`);
+        if (msg.suggested_drum != null) parts.push(`Suggests drum ${msg.suggested_drum} percent`);
       }
       if (msg.suggested_event) parts.push(`Mark ${msg.suggested_event.replace(/_/g, ' ')}`);
       if (parts.length) App.speak(parts.join('. '));

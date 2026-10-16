@@ -32,6 +32,20 @@
     .ai-applied { color: #4ade80; }
     /* Drawer */
     #side-drawer { transition: transform 0.2s ease-out; }
+    /* Roasting mode: one screen, no scroll. Setup pickers hidden; chart + all controls visible. */
+    body.roasting { height: 100vh; overflow: hidden; display: flex; flex-direction: column; padding: 0.5rem; }
+    body.roasting header { margin-bottom: 0.5rem; }
+    body.roasting #chart-card { flex: 1 1 auto; min-height: 0; height: auto !important; margin-bottom: 0.5rem; padding: 0.5rem; }
+    body.roasting #control-row { flex: 0 0 auto; height: 34vh; margin-bottom: 0; gap: 0.5rem; }
+    body.roasting #control-row > .card { padding: 0.6rem; overflow: hidden; display: flex; flex-direction: column; }
+    body.roasting #roast-setup, body.roasting #recommendation-card, body.roasting #ai-prompt-details,
+    body.roasting #preheat-row { display: none !important; }
+    body.roasting #ai-transcript { max-height: none; flex: 1 1 auto; min-height: 0; }
+    body.roasting #ai-suggestions { flex: 0 0 auto; }
+    body.roasting #event-log { max-height: none; flex: 1 1 auto; min-height: 0; }
+    body.roasting #control-row h2 { margin-bottom: 0.4rem; }
+    body.roasting .event-btn { padding-top: 0.35rem; padding-bottom: 0.35rem; }
+    body.roasting #emergency-stop { padding-top: 0.4rem; padding-bottom: 0.4rem; font-size: 1rem; }
   </style>
 </head>
 <body class="min-h-screen p-4">
@@ -83,12 +97,12 @@
   </header>
 
   <!-- Chart -->
-  <div class="card p-4 mb-4" style="height: 600px;">
+  <div id="chart-card" class="card p-4 mb-4" style="height: 600px;">
     <canvas id="roast-chart"></canvas>
   </div>
 
   <!-- Controls + Events + AI + Log Row -->
-  <div class="grid grid-cols-4 gap-4 mb-4">
+  <div id="control-row" class="grid grid-cols-4 gap-4 mb-4">
 
     <!-- Controls -->
     <div class="card p-4">
@@ -115,7 +129,7 @@
           <input type="range" id="ctrl-drum" min="0" max="100" value="0"
                  class="w-full h-2 rounded-lg appearance-none cursor-pointer accent-emerald-500 bg-slate-700">
         </div>
-        <div class="pt-2 border-t border-slate-700">
+        <div id="preheat-row" class="pt-2 border-t border-slate-700">
           <div class="flex gap-2">
             <input type="number" id="preheat-temp" placeholder="200" value="200"
                    class="w-20 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm text-center">
@@ -131,7 +145,14 @@
     <!-- Events -->
     <div class="card p-4">
       <h2 class="text-sm font-semibold text-slate-400 mb-3">EVENTS</h2>
-      <div class="mb-3 space-y-1">
+      <div id="detected-drop" class="hidden mb-2 p-2 rounded border border-red-500 bg-red-950 text-xs text-red-200">
+        <div>Drop detected at <b id="detected-drop-time">—</b> (<span id="detected-drop-temp">—</span>°C)</div>
+        <div class="flex gap-2 mt-1">
+          <button onclick="Roast.doDrop()" class="flex-1 bg-red-700 hover:bg-red-600 text-white py-1 rounded">Finish roast</button>
+          <button onclick="Roast.dismissDetectedDrop()" class="flex-1 bg-slate-700 hover:bg-slate-600 text-slate-200 py-1 rounded">Not a drop</button>
+        </div>
+      </div>
+      <div id="roast-setup" class="mb-3 space-y-1">
         <div class="text-xs text-slate-400 mb-2"><span id="charge-drop-info">No presale drop selected</span> <button onclick="Inventory.clearDrop()" class="underline">Clear drop</button></div>
         <select id="coffee-select" onchange="Roast.onCoffeeChange()"
                 class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs">
@@ -263,7 +284,7 @@
           Send
         </button>
       </form>
-      <details class="mt-3 text-xs border-t border-slate-800 pt-2">
+      <details id="ai-prompt-details" class="mt-3 text-xs border-t border-slate-800 pt-2">
         <summary onclick="Roast.refreshAIPrompt()" class="cursor-pointer text-slate-400 hover:text-slate-200">
           Prompt context
         </summary>
