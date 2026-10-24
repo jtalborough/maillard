@@ -400,11 +400,25 @@ async def _release_for_drop(
     plan["drop"] = drop.model_dump(by_alias=True, exclude={"green_grams_per_bag"})
 
 
+def _roast_was_charged(roast: Roast) -> bool:
+    """False only for an aborted false start in a cold roaster. The batch weight is
+    pre-filled at Charge, so e.g. the Oct 16 abort (9.5 s, BT 22-23 C) consumed 924 g
+    of green that never went in. Without curve evidence we keep deducting (safe default,
+    e.g. an emergency stop right after charge)."""
+    if roast.roasted_weight_grams or roast.bags_packed:
+        return True
+    curve = roast.curve_data or {}
+    bts = [b for b in (curve.get("bt") or []) if isinstance(b, (int, float))]
+    return not bts or max(bts) >= 60
+
+
 async def deduct_for_roast(roast: Roast) -> dict:
     key = f"roast:{roast.id}"
     if not roast.coffee_id or roast.status not in ("completed", "aborted", "abandoned"):
         return {"deducted": False, "warning": "Roast unfinished or coffee unknown"}
-    if roast.status in ("aborted", "abandoned") and roast.green_weight_grams is None:
+    if roast.status in ("aborted", "abandoned") and (
+        roast.green_weight_grams is None or not _roast_was_charged(roast)
+    ):
         return {"deducted": False, "warning": "Uncharged roast"}
     grams = (
         roast.green_weight_grams if roast.green_weight_grams is not None else roast.batch_size_grams

@@ -69,6 +69,13 @@ class RoastSession:
         self.coffee_id = coffee_id
         self.batch_size_grams = batch_size_grams
         self._unsubscribe: UnsubscribeFunc | None = None
+        from maillard.roasting.autodetect import EventAutoDetector
+
+        self.detector = EventAutoDetector()
+        # Events marked by the detector (operator marks always win / can replace these)
+        self.auto_events: set[str] = set()
+        # Drop detected from the BT fall; the operator finishes the roast (backdated to it)
+        self.detected_drop: dict | None = None
 
     @classmethod
     def start(
@@ -169,6 +176,31 @@ class RoastSession:
             )
         except Exception:
             _logger.debug("Failed to record sample", exc_info=True)
+            return
+        self._run_autodetect(round(elapsed, 1), float(bt))
+
+    def _run_autodetect(self, t: float, bt: float) -> None:
+        try:
+            for ev in self.detector.update(t, bt):
+                if ev.kind == "turning_point":
+                    if self.collector.get_event("turning_point") is None:
+                        self.mark_event("turning_point", temp=ev.temp, time_seconds=ev.time_seconds)
+                        self.auto_events.add("turning_point")
+                        _logger.info("Auto-detected TP at %.0fs %.1fC", ev.time_seconds, ev.temp)
+                elif ev.kind == "drop" and self.detected_drop is None:
+                    self.detected_drop = {"time_seconds": ev.time_seconds, "temp": ev.temp}
+                    _logger.info("Auto-detected drop at %.0fs %.1fC", ev.time_seconds, ev.temp)
+        except Exception:
+            _logger.debug("Auto-detect failed", exc_info=True)
+
+    def dismiss_detected_drop(self) -> None:
+        """Operator says it wasn't a drop; keep watching for a real one."""
+        from maillard.roasting.autodetect import EventAutoDetector
+
+        self.detected_drop = None
+        fresh = EventAutoDetector()
+        fresh.tp_done = True
+        self.detector = fresh
 
     def record_connection_event(self, event: dict) -> None:
         self.connection_events.append({**event, "elapsed": self.elapsed_time})

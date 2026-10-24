@@ -260,6 +260,7 @@ class AISuggestionEvent(BaseEvent):
         reasoning: Short explanation of the AI's analysis
         suggested_heat: Heat power to suggest (0-100), or None
         suggested_fan: Fan speed to suggest (0-100), or None
+        suggested_drum: Drum speed to suggest (0-100), or None
         suggested_event: Event to suggest marking, or None
         ask_operator: Question for the operator, or None
         drop: Whether the AI suggests dropping
@@ -269,6 +270,7 @@ class AISuggestionEvent(BaseEvent):
     reasoning: str
     suggested_heat: int | None = None
     suggested_fan: int | None = None
+    suggested_drum: int | None = None
     suggested_event: str | None = None
     ask_operator: str | None = None
     drop: bool = False

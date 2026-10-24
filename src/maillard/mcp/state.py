@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from maillard.core.config import MaillardConfig, get_config
+from maillard.core.cooling import CoolingFanController
 from maillard.core.events import EventBus
 from maillard.core.heating import HeatingManager
 from maillard.core.safety import SafetyMonitor
@@ -75,8 +76,18 @@ class ApplicationState:
     _monitor: RoastMonitor | None = field(default=None, repr=False)
     _safety_monitor: SafetyMonitor | None = field(default=None, repr=False)
     _execution_engine: RoastExecutionEngine | None = field(default=None, repr=False)
+    _cooling: CoolingFanController | None = field(default=None, repr=False)
     _initialized: bool = field(default=False, repr=False)
     _driver_type: DriverType = field(default="kaleido", repr=False)
+
+    def cooling_fan(self) -> CoolingFanController:
+        if self._cooling is None:
+            self._cooling = CoolingFanController(
+                duration_seconds=self.config.cooling_fan_duration_seconds
+            )
+        else:
+            self._cooling.configure(self.config.cooling_fan_duration_seconds)
+        return self._cooling
 
     @property
     def is_roast_active(self) -> bool:

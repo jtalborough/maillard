@@ -103,6 +103,7 @@ class MaillardConfig(BaseSettings):
     ai_auto_control_enabled: bool = False
     ai_live_model: str = "claude-haiku-4-5-20251001"
     ai_plan_model: str = "claude-sonnet-4-5-20250929"
+    cooling_fan_duration_seconds: float = Field(default=240.0, gt=0)
 
     # Database (MongoDB). Credentials are read from mounted files at connection
     # time so they never become normal settings values or environment variables.
@@ -142,6 +143,7 @@ class MaillardConfig(BaseSettings):
     label_base_url: str = ""  # Externally-reachable URL for QR codes
     label_styles_dir: str = ""  # Custom label styles directory (YAML files)
     label_default_style: str = "drop"  # Default label style ID
+    label_brand_name: str = ""
 
     # CORS
     cors_origins: str = ""

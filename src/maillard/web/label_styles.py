@@ -143,7 +143,7 @@ def _load_theme_from_yaml(path: Path) -> LabelTheme | None:
         return None
 
 
-def load_themes(custom_dir: str = "") -> dict[str, LabelTheme]:
+def load_themes(custom_dir: str = "", brand_name: str = "") -> dict[str, LabelTheme]:
     """Load all themes: built-in first, then custom overrides.
 
     Args:
@@ -172,6 +172,10 @@ def load_themes(custom_dir: str = "") -> dict[str, LabelTheme]:
                     themes[theme.id] = theme
         else:
             _logger.warning("Custom label styles directory not found: %s", custom_dir)
+
+    if brand_name:
+        for theme in themes.values():
+            theme.brand_name = brand_name
 
     return themes
 

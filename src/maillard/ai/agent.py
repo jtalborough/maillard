@@ -8,7 +8,7 @@ Models are configured via MAILLARD_AI_LIVE_MODEL and MAILLARD_AI_PLAN_MODEL.
 
 Two modes:
 - **suggest**: Claude suggests, human applies via dashboard buttons.
-- **auto**: Claude auto-applies heat/fan changes; human confirms events and drop.
+- **auto**: Claude auto-applies heat/fan/drum; human confirms events and drop.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ import anthropic
 from maillard.ai.calibration import format_calibration, get_calibration, load_calibration
 from maillard.ai.history import format_history_for_prompt, load_roast_history
 from maillard.core.config import get_config
-from maillard.core.events import AISuggestionEvent, AITranscriptEvent
+from maillard.core.events import AISuggestionEvent, AITranscriptEvent, SafetyAlertEvent, SafetyAlertLevel
 from maillard.roasting.curve import DuplicateEventError
 from maillard.roasting.state import RoastPhase
 
@@ -40,6 +40,15 @@ _logger = logging.getLogger(__name__)
 
 ANALYSIS_INTERVAL = 8.0  # seconds between analysis calls
 MAX_CURVE_POINTS = 40  # data points in context
+AUTO_FAIL_FALLBACK = 3
+
+
+def _clamp_control(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return max(0, min(100, int(round(value))))
+    return None
 
 
 class AIMode(Enum):
@@ -57,7 +66,16 @@ def _fmt_time(seconds: float | None) -> str:
 
 SYSTEM_PROMPT = """\
 You are an expert coffee roastmaster advising on a live Kaleido M10 roast.
-You MUST set BOTH heat AND fan every response. Fan is NOT optional.
+You MUST set heat, fan AND drum every response. None of them is optional.
+
+## Drum speed (Kaleido M10)
+Drum speed changes heat transfer. Faster drum = more convective, more even contact
+and a slight cooling effect (lower RoR, gentler surface heating); slower drum = more
+conductive contact with the hot drum (higher RoR, more risk of tipping/scorching).
+Usually hold drum steady; change it in small steps (5-10%) to fine-tune RoR or
+evenness, e.g. raise drum into Maillard/FC to soften a rising RoR without a big heat cut.
+Keep drum within 30-80% unless the plan says otherwise. Repeat the current drum value
+if no change is needed.
 
 ## Charge and pace
 At charge BT reads the preheated drum, then falls to TP. Maintain the operator's
@@ -82,7 +100,7 @@ If "Past Roasts" is present, compare current pace to the best past roast.
 Reference specific metrics (DTR, drop temp, phase times) in your reasoning.
 
 ## What NOT To Ask
-- NEVER ask about batch weight, bean movement, drum speed, or mechanical status.
+- NEVER ask about batch weight, bean movement, or mechanical status.
 - NEVER ask the same question twice.
 - NEVER mention first crack if fc_start is already marked.
 - ONLY ask about first crack (once, when conditions met) or drop confirmation.
@@ -93,6 +111,7 @@ Respond with ONLY valid JSON, no markdown fences:
   "reasoning": "1-2 sentence analysis of current state and what you're adjusting",
   "heat": <int 0-100>,
   "fan": <int 0-100>,
+  "drum": <int 0-100>,
   "event": <"dry_end" or null>,
   "ask": <question for operator or null>,
   "drop": <true to suggest ending roast, or false>
@@ -133,6 +152,8 @@ class RoastAIAgent:
         self._transcript: list[dict[str, Any]] = []
         self._operator_messages: list[dict[str, Any]] = []
         self._last_prompt_snapshot: dict[str, Any] | None = None
+        self._auto_fail_count = 0
+        self._fallback_reason: str | None = None
 
     @property
     def mode(self) -> AIMode:
@@ -171,11 +192,60 @@ class RoastAIAgent:
             )
         old = self._mode
         self._mode = mode
+        if mode == AIMode.AUTO:
+            self._auto_fail_count = 0
+            self._fallback_reason = None
 
         if mode == AIMode.OFF:
             await self.stop()
         elif old == AIMode.OFF:
             await self.start()
+
+    async def notify_operator_override(
+        self,
+        *,
+        heat: int | None = None,
+        fan: int | None = None,
+        drum: int | None = None,
+    ) -> bool:
+        if self._mode != AIMode.AUTO:
+            return False
+        parts = []
+        if heat is not None:
+            parts.append(f"heat={heat}%")
+        if fan is not None:
+            parts.append(f"fan={fan}%")
+        if drum is not None:
+            parts.append(f"drum={drum}%")
+        reason = "Operator override (" + ", ".join(parts or ["controls"]) + ")"
+        await self._fallback_from_auto(reason, stop_loop=True)
+        return True
+
+    async def _fallback_from_auto(self, reason: str, *, stop_loop: bool = False) -> None:
+        if self._mode != AIMode.AUTO:
+            return
+        self._fallback_reason = reason
+        self._mode = AIMode.OFF
+        _logger.warning("AI AUTO falling back to manual: %s", reason)
+        monitor = getattr(self._state, "_safety_monitor", None)
+        if monitor is not None:
+            with contextlib.suppress(Exception):
+                monitor.set_watchdog_enforced(False)
+        message = f"AI auto control stopped — fell back to manual. {reason}"
+        with contextlib.suppress(Exception):
+            await self._state.event_bus.publish(
+                SafetyAlertEvent(
+                    level=SafetyAlertLevel.WARNING,
+                    message=message,
+                    condition="ai_auto_fallback",
+                    cleared=False,
+                )
+            )
+        entry = self._record_transcript("system", "action", message)
+        with contextlib.suppress(Exception):
+            await self._publish_transcript_entry(entry)
+        if stop_loop:
+            await self.stop()
 
     def set_pending_coffee_id(self, coffee_id: str | None) -> None:
         """Set the coffee ID for roast history lookup (called at charge)."""
@@ -223,9 +293,8 @@ class RoastAIAgent:
         if driver is None or not driver.is_connected:
             return {"error": "Roaster not connected"}
 
-        # Apply heat
-        heat = suggestion.get("heat")
-        if heat is not None and isinstance(heat, int) and 0 <= heat <= 100:
+        heat = _clamp_control(suggestion.get("heat"))
+        if heat is not None:
             from maillard.core.heating import HeatingManager
 
             if heat > 0:
@@ -239,11 +308,15 @@ class RoastAIAgent:
             await driver.set_heat(heat)
             result["applied"].append(f"heat={heat}%")
 
-        # Apply fan
-        fan = suggestion.get("fan")
-        if fan is not None and isinstance(fan, int) and 0 <= fan <= 100:
+        fan = _clamp_control(suggestion.get("fan"))
+        if fan is not None:
             await driver.set_fan(fan)
             result["applied"].append(f"fan={fan}%")
+
+        drum = _clamp_control(suggestion.get("drum"))
+        if drum is not None:
+            await driver.set_drum(drum)
+            result["applied"].append(f"drum={drum}%")
 
         # Apply event
         event = suggestion.get("event")
@@ -278,6 +351,8 @@ class RoastAIAgent:
             parts.append(f"heat {suggestion['heat']}%")
         if suggestion.get("fan") is not None:
             parts.append(f"fan {suggestion['fan']}%")
+        if suggestion.get("drum") is not None:
+            parts.append(f"drum {suggestion['drum']}%")
         if suggestion.get("event"):
             parts.append(f"event {suggestion['event']}")
         if suggestion.get("drop"):
@@ -459,7 +534,7 @@ class RoastAIAgent:
                 "Using both the coffee characteristics AND past roast data above, recommend:\n"
                 "1. Target phase times (charge→TP, TP→dry end, dry end→FC, FC→drop)\n"
                 "2. Target drop temp and DTR%\n"
-                "3. Heat/fan strategy per phase\n"
+                "3. Heat/fan/drum strategy per phase\n"
                 "4. What to do differently vs the best past roast (if anything)\n"
                 "Keep it concise — 3-5 bullet points max."
             )
@@ -468,7 +543,7 @@ class RoastAIAgent:
                 f"\nThis is the FIRST roast of this coffee. Target: {level}.\n"
                 "Based on the coffee characteristics above, recommend:\n"
                 "1. Target phase times and drop temp/DTR%\n"
-                "2. Heat/fan strategy per phase\n"
+                "2. Heat/fan/drum strategy per phase\n"
                 "3. Key things to watch for given origin/processing/altitude\n"
                 "Keep it concise — 3-5 bullet points max."
             )
@@ -640,21 +715,20 @@ class RoastAIAgent:
         """Main loop: build context, call the live model, publish event."""
         while True:
             try:
-                # Only run when roast is active
                 if not self._state.is_roast_active or self._mode == AIMode.OFF:
                     await asyncio.sleep(2.0)
                     continue
 
-                # Sync marked events from session (catches dashboard-marked events)
+                if self._mode == AIMode.AUTO and self._should_fallback_for_link():
+                    await self._fallback_from_auto(
+                        "Roaster disconnected or BT data stale"
+                    )
+                    await asyncio.sleep(ANALYSIS_INTERVAL)
+                    continue
+
                 self._sync_marked_events()
-
-                # Auto-detect turning point from curve data
                 self._auto_detect_turning_point()
-
-                # Resolve roast level from profile DB (once per roast)
                 await self._resolve_roast_level()
-
-                # Resolve roast history (once per roast)
                 await self._resolve_roast_history()
 
                 messages = self._build_messages()
@@ -664,36 +738,42 @@ class RoastAIAgent:
 
                 decision = await self._call_llm(messages)
                 if decision is None:
+                    if self._mode == AIMode.AUTO:
+                        self._auto_fail_count += 1
+                        if self._auto_fail_count >= AUTO_FAIL_FALLBACK:
+                            await self._fallback_from_auto(
+                                f"AI loop failed {self._auto_fail_count} times"
+                            )
                     await asyncio.sleep(ANALYSIS_INTERVAL)
                     continue
 
-                # Strip events that are auto-detected or operator-only
+                self._auto_fail_count = 0
+
                 evt = decision.get("event")
                 if evt in ("turning_point", "fc_start"):
                     decision["event"] = None
-                # Strip already-marked events
                 if evt and evt in self._marked_events:
                     decision["event"] = None
 
-                # Deduplicate ask questions
                 self._dedup_ask(decision)
 
-                # Pet the safety watchdog — AI is actively monitoring
                 if self._state._safety_monitor:
                     self._state._safety_monitor.reset_watchdog()
 
                 self._last_suggestion = decision
 
-                # In auto mode, apply heat/fan immediately
                 auto_applied = False
                 if self._mode == AIMode.AUTO and self.auto_control_enabled:
                     auto_applied = await self._auto_apply(decision)
 
-                # Publish suggestion event
+                heat = _clamp_control(decision.get("heat"))
+                fan = _clamp_control(decision.get("fan"))
+                drum = _clamp_control(decision.get("drum"))
                 event = AISuggestionEvent(
                     reasoning=decision.get("reasoning", ""),
-                    suggested_heat=decision.get("heat"),
-                    suggested_fan=decision.get("fan"),
+                    suggested_heat=heat,
+                    suggested_fan=fan,
+                    suggested_drum=drum,
                     suggested_event=decision.get("event"),
                     ask_operator=decision.get("ask"),
                     drop=bool(decision.get("drop")),
@@ -712,6 +792,7 @@ class RoastAIAgent:
                     suggestion={
                         "heat": event.suggested_heat,
                         "fan": event.suggested_fan,
+                        "drum": event.suggested_drum,
                         "event": event.suggested_event,
                         "ask": event.ask_operator,
                         "drop": event.drop,
@@ -725,11 +806,27 @@ class RoastAIAgent:
                 raise
             except Exception:
                 _logger.warning("AI agent cycle failed", exc_info=True)
+                if self._mode == AIMode.AUTO:
+                    self._auto_fail_count += 1
+                    if self._auto_fail_count >= AUTO_FAIL_FALLBACK:
+                        with contextlib.suppress(Exception):
+                            await self._fallback_from_auto(
+                                f"AI loop failed {self._auto_fail_count} times"
+                            )
 
             await asyncio.sleep(ANALYSIS_INTERVAL)
 
+    def _should_fallback_for_link(self) -> bool:
+        driver = self._state.driver
+        if driver is None or not driver.is_connected:
+            return True
+        monitor = getattr(self._state, "_monitor", None)
+        if monitor is not None and getattr(monitor, "connection_lost", False):
+            return True
+        return False
+
     async def _auto_apply(self, decision: dict[str, Any]) -> bool:
-        """Auto-apply heat/fan changes (not events or drop). Returns True if anything applied."""
+        """Auto-apply heat/fan/drum (not events or drop). Returns True if anything applied."""
         applied = False
         state = self._state
         driver = state.driver
@@ -737,8 +834,8 @@ class RoastAIAgent:
         if driver is None or not driver.is_connected:
             return False
 
-        heat = decision.get("heat")
-        if heat is not None and isinstance(heat, int) and 0 <= heat <= 100:
+        heat = _clamp_control(decision.get("heat"))
+        if heat is not None:
             from maillard.core.heating import HeatingManager
 
             if heat > 0:
@@ -752,9 +849,14 @@ class RoastAIAgent:
             await driver.set_heat(heat)
             applied = True
 
-        fan = decision.get("fan")
-        if fan is not None and isinstance(fan, int) and 0 <= fan <= 100:
+        fan = _clamp_control(decision.get("fan"))
+        if fan is not None:
             await driver.set_fan(fan)
+            applied = True
+
+        drum = _clamp_control(decision.get("drum"))
+        if drum is not None:
+            await driver.set_drum(drum)
             applied = True
 
         return applied
@@ -870,13 +972,13 @@ class RoastAIAgent:
                 s = samples[i]
                 r = f"{ror_list[i]:.1f}" if i < len(ror_list) and ror_list[i] is not None else "N/A"
                 curve_lines.append(
-                    f"  {_fmt_time(s.time_seconds)} BT={s.bt:.1f} RoR={r} HP={s.heat} Fan={s.fan}"
+                    f"  {_fmt_time(s.time_seconds)} BT={s.bt:.1f} RoR={r} HP={s.heat} Fan={s.fan} Drum={s.drum}"
                 )
             # Always include latest
             if len(samples) > 1 and (len(samples) - 1) % step != 0:
                 s = samples[-1]
                 curve_lines.append(
-                    f"  {_fmt_time(s.time_seconds)} BT={s.bt:.1f} RoR={ror_s} HP={s.heat} Fan={s.fan}"
+                    f"  {_fmt_time(s.time_seconds)} BT={s.bt:.1f} RoR={ror_s} HP={s.heat} Fan={s.fan} Drum={s.drum}"
                 )
             sections.append("\n".join(curve_lines))
 
@@ -987,4 +1089,5 @@ class RoastAIAgent:
             "transcript_count": len(self._transcript),
             "operator_message_count": len(self._operator_messages),
             "prompt_available": self._last_prompt_snapshot is not None,
+            "fallback_reason": self._fallback_reason,
         }
