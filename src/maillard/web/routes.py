@@ -833,11 +833,16 @@ def create_router() -> APIRouter:
             state._heating_manager = None
         await state.driver.set_heat(0)
 
-        # Cooling: drum fan 100%, try cooling tray fan (CS=1)
         await state.driver.set_fan(100)
+        cooling_confirmed = False
         try:
             await state.driver._send_message("CS", "1")
-            _logger.info("Cooling fan enabled (CS=1)")
+            for _ in range(15):
+                if state.driver.get_state_value("CS") == 1:
+                    cooling_confirmed = True
+                    break
+                await asyncio.sleep(0.1)
+            _logger.info("Cooling fans at drop (CS=1, confirmed=%s)", cooling_confirmed)
         except Exception:
             _logger.debug("CS command not supported", exc_info=True)
 

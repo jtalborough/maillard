@@ -281,7 +281,6 @@ async def test_three_misses_reconnect_through_connection_loop():
 
 @pytest.mark.asyncio
 async def test_short_stall_keeps_socket_open():
-    """Oct 16: brief RD stalls recover on their own; only a long silence forces a close."""
     import time as _t
     driver = KaleidoDriver(stall_close_seconds=12)
     driver._state = {'sid': 1}

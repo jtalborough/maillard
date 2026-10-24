@@ -654,12 +654,39 @@ class RoastAIAgent:
             except Exception:
                 _logger.debug("Failed to auto-mark turning point", exc_info=True)
 
+    def _roaster_link_lost(self) -> bool:
+        driver = self._state.driver
+        if driver is None or not driver.is_connected:
+            return True
+        monitor = getattr(self._state, "_monitor", None)
+        return bool(monitor is not None and monitor.connection_lost)
+
+    async def _fallback_manual_on_disconnect(self) -> bool:
+        if self._mode != AIMode.AUTO or not self._roaster_link_lost():
+            return False
+        await self.set_mode(AIMode.OFF)
+        safety = getattr(self._state, "_safety_monitor", None)
+        if safety is not None:
+            safety.set_watchdog_enforced(False)
+        entry = self._record_transcript(
+            "system",
+            "event",
+            "AUTO disabled — roaster disconnected; control is manual",
+        )
+        await self._publish_transcript_entry(entry)
+        _logger.warning("AI AUTO fell back to manual after roaster disconnect")
+        return True
+
     async def _loop(self) -> None:
         """Main loop: build context, call the live model, publish event."""
         while True:
             try:
                 # Only run when roast is active
                 if not self._state.is_roast_active or self._mode == AIMode.OFF:
+                    await asyncio.sleep(2.0)
+                    continue
+
+                if await self._fallback_manual_on_disconnect():
                     await asyncio.sleep(2.0)
                     continue
 
@@ -702,9 +729,12 @@ class RoastAIAgent:
 
                 self._last_suggestion = decision
 
-                # In auto mode, apply heat/fan immediately
+                # In auto mode, apply heat/fan/drum immediately
                 auto_applied = False
                 if self._mode == AIMode.AUTO and self.auto_control_enabled:
+                    if await self._fallback_manual_on_disconnect():
+                        await asyncio.sleep(ANALYSIS_INTERVAL)
+                        continue
                     auto_applied = await self._auto_apply(decision)
 
                 # Publish suggestion event
@@ -749,7 +779,7 @@ class RoastAIAgent:
             await asyncio.sleep(ANALYSIS_INTERVAL)
 
     async def _auto_apply(self, decision: dict[str, Any]) -> bool:
-        """Auto-apply heat/fan changes (not events or drop). Returns True if anything applied."""
+        """Auto-apply heat/fan/drum changes (not events or drop). Returns True if anything applied."""
         applied = False
         state = self._state
         driver = state.driver

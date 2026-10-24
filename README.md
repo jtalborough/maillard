@@ -6,7 +6,7 @@ Maillard connects a real, fire-breathing drum roaster to an AI assistant. It tal
 
 - **Plans the roast.** AI-generated profiles and pre-roast recommendations (charge temp, initial heat and airflow) from coffee data and your own roast history.
 - **Rides along live.** Real-time BT/ET, rate of rise, phase tracking, and a copilot that comments on the curve as it happens.
-- **Keeps a human in charge.** Safety limits, watchdog, emergency stop, and explicit confirmations. Autonomous control is off by default.
+- **Keeps a human in charge.** Safety limits, watchdog, emergency stop, and explicit confirmations. AUTO falls back to manual on disconnect.
 - **Closes the loop.** Cupping scores, roast comparison, green-inventory ledger, and printable labels with QR codes.
 - **Speaks MCP.** Works with Claude Desktop and any MCP client, plus a web UI and REST API.
 
@@ -41,7 +41,9 @@ Configure AI models independently in `.env` (restart Maillard after changes):
 OAuth setup tokens (`sk-ant-oat01-`) supplied through `ANTHROPIC_API_KEY` use
 Bearer authentication and the OAuth beta header. Credentials do not select models.
 If AI profile generation fails, a warning is logged and the response reports `source="heuristic"`.
-AUTO remains disabled by default (`MAILLARD_AI_AUTO_CONTROL_ENABLED=false`); roasting requires supervision.
+Production NAS deploys set `MAILLARD_AI_AUTO_CONTROL_ENABLED=true`. Roasting still requires supervision; AUTO falls back to manual if the roaster disconnects.
+
+**Canonical repo:** [jtalborough/maillard](https://github.com/jtalborough/maillard) is the public source of truth and the only repo that builds/deploys. The private `maillard-archive` history is retained for reference only.
 
 ## Quick Start (Docker)
 

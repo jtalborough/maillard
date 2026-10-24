@@ -96,7 +96,7 @@ Compose loads `.env` using `env_file: .env`. Before updating it, the job creates
 The rewrite removes every `SUPABASE_` assignment (including `export SUPABASE_...`) and replaces these assignments:
 
 - `MAILLARD_SITE_URL=https://roastery.example.com`
-- `MAILLARD_AI_AUTO_CONTROL_ENABLED=false`
+- `MAILLARD_AI_AUTO_CONTROL_ENABLED=true`
 - `MAILLARD_INGEST_SECRET` from the repository secret
 
 Other lines are preserved. Secrets are passed through SSH action environment inputs and written using builtin `printf`, without printing them.

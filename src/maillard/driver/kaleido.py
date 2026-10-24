@@ -93,9 +93,6 @@ class KaleidoDriver(RoasterDriver):
         self._ping_interval = ping_interval or None
         self._ping_timeout = ping_timeout or None
         self._max_missed_replies = max_missed_replies
-        # Oct 16 roast: short RD stalls (2-4 s) recovered on their own, but every
-        # forced close cost 6-32 s because the Kaleido rejects re-handshakes while
-        # its old session lingers. Only tear down after a long, real silence.
         self._stall_close_seconds = stall_close_seconds
         self._forced_close_reconnect_delay = forced_close_reconnect_delay
         self._forced_close = False
@@ -430,8 +427,6 @@ class KaleidoDriver(RoasterDriver):
         await self._process_message(response_str.strip())
 
     def _stalled_long_enough(self) -> bool:
-        """True once replies are missing for max_missed_replies polls AND no fresh BT
-        has arrived for stall_close_seconds (since the last BT or the connect)."""
         if self._missed_replies < self._max_missed_replies:
             return False
         ref = self.last_bt_sample_time or self._connected_at
@@ -625,7 +620,6 @@ class KaleidoDriver(RoasterDriver):
             if self._running:
                 delay = self._next_backoff(attempt)
                 if self._forced_close:
-                    # Give the roaster time to drop the half-dead session before re-handshaking.
                     delay = max(delay, self._forced_close_reconnect_delay)
                     self._forced_close = False
                 await asyncio.sleep(delay)
