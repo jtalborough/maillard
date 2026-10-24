@@ -263,12 +263,10 @@ async def test_emergency_stop_enqueues_aborted_roast(sim_app):
 
 @pytest.mark.asyncio
 async def test_drop_persists_all_session_phases(sim_app):
-    from starlette.requests import Request
-
     from maillard.db.models import Roast
     from maillard.roasting.session import RoastSession
 
-    _client, state, app, _sim = sim_app
+    client, state, _app, _sim = sim_app
     roast = Roast(batch_size_grams=450)
     await roast.insert()
     session = RoastSession.start(state.event_bus, charge_temp=200, roast_id=roast.id)
@@ -277,10 +275,11 @@ async def test_drop_persists_all_session_phases(sim_app):
     for phase, seconds, temp in phases:
         session.mark_event(phase, temp=temp, time_seconds=seconds)
     state.roast_session = session
-    request = Request({"type": "http", "app": app})
-    endpoint = next(route.endpoint for route in app.routes if route.path == "/api/drop")
-    result = await endpoint(request)
+    state.roast_context.roast_id = roast.id
+    state.roast_context.is_active = True
+    result = (await client.post("/api/drop")).json()
     assert result["status"] == "dropped"
+    assert result["cooling"]["enabled"] is True
     saved = await Roast.get(roast.id)
     for phase, seconds, temp in phases:
         assert getattr(saved, f"{phase}_time") == seconds

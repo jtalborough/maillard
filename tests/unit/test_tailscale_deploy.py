@@ -163,7 +163,7 @@ elif op == "exec":
 """
 
 
-def run_nas(tmp_path, *, key="", state="", failure="", active=False):
+def run_nas(tmp_path, *, key="", state="", failure="", active=False, brand="", env_text="EXISTING=value\n"):
     mock_bin = tmp_path / "bin"
     mock_bin.mkdir()
     for name in ("sudo", "curl", "sleep"):
@@ -171,7 +171,7 @@ def run_nas(tmp_path, *, key="", state="", failure="", active=False):
         executable.write_text(f"#!{sys.executable}\n" + MOCK_COMMAND)
         executable.chmod(0o755)
     (tmp_path / "docker-compose.yml").write_bytes((ROOT / "docker-compose.yml").read_bytes())
-    (tmp_path / ".env").write_text("EXISTING=value\n")
+    (tmp_path / ".env").write_text(env_text)
     if failure == "files":
         (tmp_path / "tailscale").write_text("cannot create directory here")
     script = NAS_SCRIPT.replace("cd /volume1/docker/maillard", 'cd "$TEST_NAS_DIR"')
@@ -194,6 +194,7 @@ def run_nas(tmp_path, *, key="", state="", failure="", active=False):
             "GHCR_TOKEN": "test-ghcr",
             "GHCR_USER": "tester",
             "DEPLOY_SHA": "test-sha",
+            "MAILLARD_LABEL_BRAND_NAME": brand,
         },
     )
     calls_file = tmp_path / "docker-calls.jsonl"
@@ -230,6 +231,24 @@ def test_no_key_or_saved_state_skips_sidecar(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "sidecar skipped" in result.stdout
     assert not any(call["args"][-2:] == ["pull", "maillard-ts"] for call in calls)
+    env = (tmp_path / ".env").read_text()
+    assert "MAILLARD_AI_AUTO_CONTROL_ENABLED=true" in env
+    assert "MAILLARD_AI_AUTO_CONTROL_ENABLED=false" not in env
+    assert "MAILLARD_LABEL_BRAND_NAME" not in env
+
+
+def test_label_brand_name_written_when_set(tmp_path):
+    result, _ = run_nas(tmp_path, brand="Test Roasters", env_text="MAILLARD_LABEL_BRAND_NAME=Old\n")
+    assert result.returncode == 0, result.stderr
+    env = (tmp_path / ".env").read_text()
+    assert "MAILLARD_LABEL_BRAND_NAME=Test Roasters\n" in env
+    assert "MAILLARD_LABEL_BRAND_NAME=Old" not in env
+
+
+def test_label_brand_name_kept_when_unset(tmp_path):
+    result, _ = run_nas(tmp_path, env_text="MAILLARD_LABEL_BRAND_NAME=Kept\n")
+    assert result.returncode == 0, result.stderr
+    assert "MAILLARD_LABEL_BRAND_NAME=Kept\n" in (tmp_path / ".env").read_text()
 
 
 @pytest.mark.parametrize("failure", ["pull", "up", "status", "files"])

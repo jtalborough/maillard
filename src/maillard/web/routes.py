@@ -96,6 +96,7 @@ class AIToggleRequest(BaseModel):
 class AIConfirmRequest(BaseModel):
     heat: int | None = None
     fan: int | None = None
+    drum: int | None = None
     event: str | None = None
     drop: bool = False
 
@@ -199,17 +200,31 @@ def create_router() -> APIRouter:
                 round(session.latest_ror, 1) if session.latest_ror else None
             )
             roast_info["sample_count"] = session.sample_count
+            roast_info["detected_drop"] = session.detected_drop
+            roast_info["auto_events"] = sorted(session.auto_events)
 
         # Execution engine status
         engine_info: dict[str, Any] | None = None
         if state._execution_engine is not None:
             engine_info = state._execution_engine.get_status()
 
+        agent = getattr(request.app.state, "ai_agent", None)
+        ai_info = None
+        if agent is not None:
+            ai_info = {
+                "mode": agent.mode.name.lower(),
+                "auto_control_enabled": bool(
+                    getattr(agent, "auto_control_enabled", False)
+                ),
+            }
+
         return {
             "roaster": roaster,
             "roast": roast_info,
             "execution": engine_info,
             "heating": state._heating_manager.get_status() if state._heating_manager else None,
+            "cooling": state.cooling_fan().get_status(),
+            "ai": ai_info,
             "monitoring": ({"connection_lost": state._monitor.connection_lost,
                             "link_state": state._monitor.link_state,
                             "data_age_s": state._monitor.data_age_s}
@@ -445,6 +460,23 @@ def create_router() -> APIRouter:
         except Exception as e:
             _logger.exception("Error setting controls")
             return {"status": "error", "error": str(e)}
+
+        agent = getattr(request.app.state, "ai_agent", None)
+        if (
+            agent is not None
+            and (body.heat is not None or body.fan is not None or body.drum is not None)
+        ):
+            overridden = await agent.notify_operator_override(
+                heat=body.heat, fan=body.fan, drum=body.drum
+            )
+            if overridden:
+                result["ai_mode"] = agent.mode.name.lower()
+                if state._safety_monitor is not None:
+                    from maillard.ai.agent import AIMode
+
+                    state._safety_monitor.set_watchdog_enforced(
+                        agent.mode == AIMode.AUTO
+                    )
 
         return result
 
@@ -766,9 +798,14 @@ def create_router() -> APIRouter:
             "second_crack": "sc_start",
         }
 
+        session_name = session_name_map[name]
+        # Manual override: an operator mark replaces an auto-detected one.
+        if session_name in state.roast_session.auto_events:
+            state.roast_session.collector.clear_event(session_name)
+            state.roast_session.auto_events.discard(session_name)
         try:
             state.roast_session.mark_event(
-                session_name_map[name], temp=current_bt, time_seconds=float(time_secs)
+                session_name, temp=current_bt, time_seconds=float(time_secs)
             )
         except DuplicateEventError:
             return {"status": "already_marked", "event": name}
@@ -786,8 +823,16 @@ def create_router() -> APIRouter:
 
     # -- Drop ---------------------------------------------------------------
 
+    @router.post("/drop/detected/dismiss")
+    async def dismiss_detected_drop(request: Request) -> dict[str, Any]:
+        state = _get_state(request)
+        if state.roast_session is None or not state.roast_session.is_active:
+            return {"status": "error", "error": "No active roast"}
+        state.roast_session.dismiss_detected_drop()
+        return {"status": "dismissed"}
+
     @router.post("/drop")
-    async def execute_drop(request: Request) -> dict[str, Any]:
+    async def execute_drop(request: Request, use_detected: bool = True) -> dict[str, Any]:
         state = _get_state(request)
 
         if state.driver is None or not state.driver.is_connected:
@@ -806,6 +851,10 @@ def create_router() -> APIRouter:
         current_bt = driver_state.get("BT", 0)
         elapsed = session.elapsed_time or 0
         total_seconds = int(elapsed)
+        # Beans already left the drum: record the drop at the detected BT fall, not the click.
+        if use_detected and session.detected_drop:
+            total_seconds = int(session.detected_drop["time_seconds"])
+            current_bt = session.detected_drop["temp"]
 
         # Stop heating
         if state._heating_manager is not None:
@@ -813,13 +862,10 @@ def create_router() -> APIRouter:
             state._heating_manager = None
         await state.driver.set_heat(0)
 
-        # Cooling: drum fan 100%, try cooling tray fan (CS=1)
         await state.driver.set_fan(100)
-        try:
-            await state.driver._send_message("CS", "1")
-            _logger.info("Cooling fan enabled (CS=1)")
-        except Exception:
-            _logger.debug("CS command not supported", exc_info=True)
+        cooling = await state.cooling_fan().set_enabled(
+            state.driver, True, auto=True, schedule_off=True
+        )
 
         # Stop monitors
         if state._monitor is not None:
@@ -886,6 +932,7 @@ def create_router() -> APIRouter:
             "drop_temp": current_bt,
             "total_time_seconds": total_seconds,
             "dtr": dtr,
+            "cooling": cooling,
         }
 
     # -- Cooling fan ----------------------------------------------------------
@@ -896,9 +943,15 @@ def create_router() -> APIRouter:
         if state.driver is None or not state.driver.is_connected:
             return {"status": "error", "error": "Roaster not connected"}
         try:
-            await state.driver._send_message("CS", "1" if body.enabled else "0")
-            _logger.info("Cooling fan %s (CS=%s)", "enabled" if body.enabled else "disabled", "1" if body.enabled else "0")
-            return {"status": "ok", "cooling": body.enabled}
+            status = await state.cooling_fan().set_enabled(
+                state.driver, body.enabled, auto=False, schedule_off=False
+            )
+            return {
+                "status": "ok",
+                "cooling": status["enabled"],
+                "confirmed": status["confirmed"],
+                **status,
+            }
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
@@ -1560,7 +1613,9 @@ def create_router() -> APIRouter:
         state = _get_state(request)
         # Cache themes on app state to avoid re-reading YAML every request
         if not hasattr(state, "_label_themes") or state._label_themes is None:
-            state._label_themes = load_themes(state.config.label_styles_dir)
+            state._label_themes = load_themes(
+                state.config.label_styles_dir, state.config.label_brand_name
+            )
         return state._label_themes
 
     def _get_label_theme(request: Request, style_id: str | None = None):
@@ -1819,16 +1874,16 @@ def create_router() -> APIRouter:
     async def generate_qr(request: Request, coffee_slug: str) -> Any:
         """Generate a QR code PNG for a published coffee product.
 
-        QR links to: https://roastery.example.com/coffees/<slug>
+        QR links to: <MAILLARD_SITE_URL>/coffees/<slug>
         """
         import io
 
         import qrcode
         from fastapi.responses import StreamingResponse
 
-        _get_state(request)
+        state = _get_state(request)
 
-        url = f"https://roastery.example.com/coffees/{coffee_slug}"
+        url = f"{state.config.site_url.rstrip('/')}/coffees/{coffee_slug}"
         qr = qrcode.QRCode(version=None, box_size=10, border=2)
         qr.add_data(url)
         qr.make(fit=True)

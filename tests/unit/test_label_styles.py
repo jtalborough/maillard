@@ -529,3 +529,13 @@ def test_drop_footer_bounds(sample_data, coffee_name):
     for box in [code_box, url_box, brand_box]:
         assert 60 <= box[0] < box[2] <= 1140
         assert 0 <= box[1] < box[3] < 1154
+
+
+def test_brand_name_override_applies_to_all_themes():
+    themes = load_themes(brand_name="Test Roasters")
+    assert themes
+    assert {theme.brand_name for theme in themes.values()} == {"Test Roasters"}
+
+
+def test_brand_name_defaults_to_yaml_value():
+    assert load_themes()["classic"].brand_name == "Example Roastery"

@@ -323,3 +323,15 @@ async def test_pure_fifo_respects_free_reservations(coffee):
     allocations, shortage = inv.allocate_fifo(list(reversed(lots)), 600, {lots[0].id: 400})
     assert allocations == [(lots[0].id, 100), (lots[1].id, 500)]
     assert shortage == 0
+
+
+@pytest.mark.usefixtures("lots")
+async def test_aborted_cold_false_start_not_deducted(coffee):
+    roast = await Roast(
+        coffee_id=coffee.id, batch_size_grams=924, status="aborted", green_weight_grams=924,
+        curve_data={"time_seconds": [0, 1.5, 9.5], "bt": [22.8, 22.5, 22.2],
+                    "events": [{"time": 0, "type": "charge", "temp": 22.8}]},
+    ).insert()
+    result = await inv.deduct_for_roast(roast)
+    assert result["deducted"] is False
+    assert (await inv.coffee_summary(coffee.id))["remaining"] == 1500

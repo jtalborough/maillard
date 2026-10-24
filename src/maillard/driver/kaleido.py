@@ -79,6 +79,8 @@ class KaleidoDriver(RoasterDriver):
         ping_interval: float = KaleidoTimingConstants.PING_INTERVAL,
         ping_timeout: float = KaleidoTimingConstants.KEEPALIVE_TIMEOUT,
         max_missed_replies: int = 3,
+        stall_close_seconds: float = 12.0,
+        forced_close_reconnect_delay: float = 3.0,
     ) -> None:
         """Initialize the Kaleido driver.
 
@@ -91,6 +93,13 @@ class KaleidoDriver(RoasterDriver):
         self._ping_interval = ping_interval or None
         self._ping_timeout = ping_timeout or None
         self._max_missed_replies = max_missed_replies
+        # Oct 16 roast: short RD stalls (2-4 s) recovered on their own, but every
+        # forced close cost 6-32 s because the Kaleido rejects re-handshakes while
+        # its old session lingers. Only tear down after a long, real silence.
+        self._stall_close_seconds = stall_close_seconds
+        self._forced_close_reconnect_delay = forced_close_reconnect_delay
+        self._forced_close = False
+        self._connected_at: float | None = None
         self._missed_replies = 0
         self._last_rx_time: float | None = None
         self._reconnect_failures = 0
@@ -420,6 +429,14 @@ class KaleidoDriver(RoasterDriver):
 
         await self._process_message(response_str.strip())
 
+    def _stalled_long_enough(self) -> bool:
+        """True once replies are missing for max_missed_replies polls AND no fresh BT
+        has arrived for stall_close_seconds (since the last BT or the connect)."""
+        if self._missed_replies < self._max_missed_replies:
+            return False
+        ref = self.last_bt_sample_time or self._connected_at
+        return ref is None or time.monotonic() - ref >= self._stall_close_seconds
+
     async def _handle_reads(self, websocket: ClientConnection) -> None:
         """Handle incoming messages from WebSocket.
 
@@ -446,7 +463,8 @@ class KaleidoDriver(RoasterDriver):
                 self._missed_replies += 1
                 if self._missed_replies == 1:
                     self._connection_event("stall", "Read timeout")
-                if self._missed_replies >= self._max_missed_replies:
+                if self._stalled_long_enough():
+                    self._forced_close = True
                     self._connection_event("forced_close", "Read timeout after missed replies")
                     self._is_connected = False
                     self.connection_generation += 1
@@ -563,6 +581,7 @@ class KaleidoDriver(RoasterDriver):
                 attempt = 0
                 self._reconnect_failures = 0
                 self._missed_replies = 0
+                self._connected_at = time.monotonic()
                 self._is_connected = True
                 self._connection_event("connected")
                 if self._connected_callback:
@@ -604,7 +623,12 @@ class KaleidoDriver(RoasterDriver):
                     except Exception:
                         _log.exception("Disconnected callback error")
             if self._running:
-                await asyncio.sleep(self._next_backoff(attempt))
+                delay = self._next_backoff(attempt)
+                if self._forced_close:
+                    # Give the roaster time to drop the half-dead session before re-handshaking.
+                    delay = max(delay, self._forced_close_reconnect_delay)
+                    self._forced_close = False
+                await asyncio.sleep(delay)
                 attempt += 1
 
     # -------------------------------------------------------------------------
@@ -875,12 +899,13 @@ class KaleidoDriver(RoasterDriver):
         """
         # Only request if initialized (has sid from ping handshake)
         if self.get_state_value("sid") is not None:
-            result = await self._send_request("RD", "A0", "BT")
+            result = await self._send_request("RD", "A0", "BT", timeout=1.0)
             if result is None:
                 self._missed_replies += 1
                 if self._missed_replies == 1:
                     self._connection_event("stall", "RD reply timeout")
-                if self._missed_replies >= self._max_missed_replies and self._websocket:
+                if self._websocket and self._is_connected and self._stalled_long_enough():
+                    self._forced_close = True
                     self._connection_event("forced_close", "Consecutive missed RD replies")
                     self._is_connected = False
                     self.connection_generation += 1

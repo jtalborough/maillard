@@ -26,7 +26,7 @@ def test_backoff_sequence_and_jitter():
 
 @pytest.mark.asyncio
 async def test_missed_replies_close_and_bt_reset():
-    driver = KaleidoDriver()
+    driver = KaleidoDriver(stall_close_seconds=0)
     driver._state = {'sid': 1}
     driver._is_connected = True
     driver._websocket = AsyncMock()
@@ -238,7 +238,7 @@ async def test_idle_read_timeout_reply_resets_misses():
 
 @pytest.mark.asyncio
 async def test_three_misses_reconnect_through_connection_loop():
-    driver = KaleidoDriver()
+    driver = KaleidoDriver(stall_close_seconds=0, forced_close_reconnect_delay=0)
     driver._running = True
     first, second = AsyncMock(), AsyncMock()
     closed = asyncio.Event()
@@ -277,3 +277,23 @@ async def test_three_misses_reconnect_through_connection_loop():
     assert kinds.count('connected') == 2
     assert kinds.count('forced_close') == 1
     assert driver.missed_replies == 0
+
+
+@pytest.mark.asyncio
+async def test_short_stall_keeps_socket_open():
+    """Oct 16: brief RD stalls recover on their own; only a long silence forces a close."""
+    import time as _t
+    driver = KaleidoDriver(stall_close_seconds=12)
+    driver._state = {'sid': 1}
+    driver._is_connected = True
+    driver._websocket = AsyncMock()
+    driver._send_request = AsyncMock(return_value=None)
+    driver.last_bt_sample_time = _t.monotonic() - 5
+    for _ in range(5):
+        await driver.read_state()
+    driver._websocket.close.assert_not_awaited()
+    assert driver.is_connected
+    driver.last_bt_sample_time = _t.monotonic() - 13
+    await driver.read_state()
+    driver._websocket.close.assert_awaited_once()
+    assert driver._forced_close

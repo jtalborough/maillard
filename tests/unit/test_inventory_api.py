@@ -406,8 +406,14 @@ async def test_emergency_stop_accounts_charged_green(local_app, coffee):
     result = await client.post("/api/emergency-stop")
     assert result.json()["status"] == "emergency_stopped"
     roast = await Roast.get(charged["roast_id"])
-    assert roast.status == "aborted" and roast.green_deducted
-    assert (await inv.coffee_summary(coffee.id))["remaining"] == 300
+    bts = (roast.curve_data or {}).get("bt") or []
+    if bts and max(bts) < 60:
+        # Cold roaster: beans never heated, green is recoverable, nothing deducted.
+        assert roast.status == "aborted" and not roast.green_deducted
+        assert (await inv.coffee_summary(coffee.id))["remaining"] == 1500
+    else:
+        assert roast.status == "aborted" and roast.green_deducted
+        assert (await inv.coffee_summary(coffee.id))["remaining"] == 300
 
 
 async def test_inventory_failure_does_not_block_drop(local_app, coffee):
