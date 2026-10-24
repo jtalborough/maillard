@@ -1722,6 +1722,7 @@ def create_router() -> APIRouter:
                 "name": t.name,
                 "description": t.description,
                 "layout": t.layout,
+                "brand_name": t.brand_name,
             }
             for t in themes.values()
         ]

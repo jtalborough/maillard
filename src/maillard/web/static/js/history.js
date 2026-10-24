@@ -4,6 +4,7 @@
 const History = {
   data: [],
   detailChart: null,
+  labelStyles: [],
 
   async render(container) {
     container.innerHTML = '<div class="text-slate-400 text-sm">Loading...</div>';
@@ -290,14 +291,20 @@ const History = {
     return sel ? sel.value : '';
   },
 
+  _brandName() {
+    const selected = (this.labelStyles || []).find(style => style.id === this._getSelectedStyle());
+    return (selected && selected.brand_name) || 'Example Roastery';
+  },
+
   async _loadLabelStyles(roastId) {
     const sel = document.getElementById('label-style');
     if (!sel) return;
     const styles = await apiGet('/api/label-styles');
-    if (!styles || !styles.length) {
+    this.labelStyles = Array.isArray(styles) ? styles : [];
+    if (!this.labelStyles.length) {
       sel.innerHTML = '<option value="">Classic</option>';
     } else {
-      sel.innerHTML = styles.map(s =>
+      sel.innerHTML = this.labelStyles.map(s =>
         `<option value="${s.id}" title="${this._esc(s.description)}"${s.id === 'drop' ? ' selected' : ''}>${this._esc(s.name)}</option>`
       ).join('');
     }
@@ -461,7 +468,7 @@ const History = {
     if (r.dtr) parts.push(`DTR: ${r.dtr.toFixed(1)}%`);
     if (r.batch_size_grams) parts.push(`Batch: ${r.batch_size_grams}g`);
     parts.push('');
-    parts.push('Example Roastery');
+    parts.push(this._brandName());
     parts.push('Roasted with Maillard');
 
     const label = parts.join('\n');
