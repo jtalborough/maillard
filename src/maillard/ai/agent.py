@@ -57,7 +57,16 @@ def _fmt_time(seconds: float | None) -> str:
 
 SYSTEM_PROMPT = """\
 You are an expert coffee roastmaster advising on a live Kaleido M10 roast.
-You MUST set BOTH heat AND fan every response. Fan is NOT optional.
+You MUST set heat, fan AND drum every response. None of them is optional.
+
+## Drum speed (Kaleido M10)
+Drum speed changes heat transfer. Faster drum = more convective, more even contact
+and a slight cooling effect (lower RoR, gentler surface heating); slower drum = more
+conductive contact with the hot drum (higher RoR, more risk of tipping/scorching).
+Usually hold drum steady; change it in small steps (5-10%) to fine-tune RoR or
+evenness, e.g. raise drum into Maillard/FC to soften a rising RoR without a big heat cut.
+Keep drum within 30-80% unless the plan says otherwise. Repeat the current drum value
+if no change is needed.
 
 ## Charge and pace
 At charge BT reads the preheated drum, then falls to TP. Maintain the operator's
@@ -82,7 +91,7 @@ If "Past Roasts" is present, compare current pace to the best past roast.
 Reference specific metrics (DTR, drop temp, phase times) in your reasoning.
 
 ## What NOT To Ask
-- NEVER ask about batch weight, bean movement, drum speed, or mechanical status.
+- NEVER ask about batch weight, bean movement, or mechanical status.
 - NEVER ask the same question twice.
 - NEVER mention first crack if fc_start is already marked.
 - ONLY ask about first crack (once, when conditions met) or drop confirmation.
@@ -93,6 +102,7 @@ Respond with ONLY valid JSON, no markdown fences:
   "reasoning": "1-2 sentence analysis of current state and what you're adjusting",
   "heat": <int 0-100>,
   "fan": <int 0-100>,
+  "drum": <int 0-100>,
   "event": <"dry_end" or null>,
   "ask": <question for operator or null>,
   "drop": <true to suggest ending roast, or false>
@@ -245,6 +255,12 @@ class RoastAIAgent:
             await driver.set_fan(fan)
             result["applied"].append(f"fan={fan}%")
 
+        # Apply drum
+        drum = suggestion.get("drum")
+        if drum is not None and isinstance(drum, int) and 0 <= drum <= 100:
+            await driver.set_drum(drum)
+            result["applied"].append(f"drum={drum}%")
+
         # Apply event
         event = suggestion.get("event")
         if event and state.roast_session is not None:
@@ -278,6 +294,8 @@ class RoastAIAgent:
             parts.append(f"heat {suggestion['heat']}%")
         if suggestion.get("fan") is not None:
             parts.append(f"fan {suggestion['fan']}%")
+        if suggestion.get("drum") is not None:
+            parts.append(f"drum {suggestion['drum']}%")
         if suggestion.get("event"):
             parts.append(f"event {suggestion['event']}")
         if suggestion.get("drop"):
@@ -459,7 +477,7 @@ class RoastAIAgent:
                 "Using both the coffee characteristics AND past roast data above, recommend:\n"
                 "1. Target phase times (charge→TP, TP→dry end, dry end→FC, FC→drop)\n"
                 "2. Target drop temp and DTR%\n"
-                "3. Heat/fan strategy per phase\n"
+                "3. Heat/fan/drum strategy per phase\n"
                 "4. What to do differently vs the best past roast (if anything)\n"
                 "Keep it concise — 3-5 bullet points max."
             )
@@ -468,7 +486,7 @@ class RoastAIAgent:
                 f"\nThis is the FIRST roast of this coffee. Target: {level}.\n"
                 "Based on the coffee characteristics above, recommend:\n"
                 "1. Target phase times and drop temp/DTR%\n"
-                "2. Heat/fan strategy per phase\n"
+                "2. Heat/fan/drum strategy per phase\n"
                 "3. Key things to watch for given origin/processing/altitude\n"
                 "Keep it concise — 3-5 bullet points max."
             )
@@ -694,6 +712,7 @@ class RoastAIAgent:
                     reasoning=decision.get("reasoning", ""),
                     suggested_heat=decision.get("heat"),
                     suggested_fan=decision.get("fan"),
+                    suggested_drum=decision.get("drum"),
                     suggested_event=decision.get("event"),
                     ask_operator=decision.get("ask"),
                     drop=bool(decision.get("drop")),
@@ -712,6 +731,7 @@ class RoastAIAgent:
                     suggestion={
                         "heat": event.suggested_heat,
                         "fan": event.suggested_fan,
+                        "drum": event.suggested_drum,
                         "event": event.suggested_event,
                         "ask": event.ask_operator,
                         "drop": event.drop,
@@ -755,6 +775,11 @@ class RoastAIAgent:
         fan = decision.get("fan")
         if fan is not None and isinstance(fan, int) and 0 <= fan <= 100:
             await driver.set_fan(fan)
+            applied = True
+
+        drum = decision.get("drum")
+        if drum is not None and isinstance(drum, int) and 0 <= drum <= 100:
+            await driver.set_drum(drum)
             applied = True
 
         return applied
@@ -870,13 +895,13 @@ class RoastAIAgent:
                 s = samples[i]
                 r = f"{ror_list[i]:.1f}" if i < len(ror_list) and ror_list[i] is not None else "N/A"
                 curve_lines.append(
-                    f"  {_fmt_time(s.time_seconds)} BT={s.bt:.1f} RoR={r} HP={s.heat} Fan={s.fan}"
+                    f"  {_fmt_time(s.time_seconds)} BT={s.bt:.1f} RoR={r} HP={s.heat} Fan={s.fan} Drum={s.drum}"
                 )
             # Always include latest
             if len(samples) > 1 and (len(samples) - 1) % step != 0:
                 s = samples[-1]
                 curve_lines.append(
-                    f"  {_fmt_time(s.time_seconds)} BT={s.bt:.1f} RoR={ror_s} HP={s.heat} Fan={s.fan}"
+                    f"  {_fmt_time(s.time_seconds)} BT={s.bt:.1f} RoR={ror_s} HP={s.heat} Fan={s.fan} Drum={s.drum}"
                 )
             sections.append("\n".join(curve_lines))
 
