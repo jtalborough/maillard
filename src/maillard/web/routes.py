@@ -7,6 +7,7 @@ import contextlib
 import logging
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -32,6 +33,11 @@ _logger = logging.getLogger(__name__)
 
 
 _sync_tasks: set[asyncio.Task] = set()
+
+
+def _site_host(site_url: str) -> str:
+    host = urlsplit((site_url or "").strip()).netloc.removeprefix("www.")
+    return host or "roastery.example.com"
 
 
 def _enqueue_site_sync(roast_id: str) -> None:
@@ -1715,7 +1721,9 @@ def create_router() -> APIRouter:
 
     @router.get("/label-styles")
     async def list_label_styles(request: Request) -> list[dict[str, str]]:
+        state = _get_state(request)
         themes = _get_label_themes(request)
+        site_host = _site_host(state.config.site_url)
         return [
             {
                 "id": t.id,
@@ -1723,6 +1731,7 @@ def create_router() -> APIRouter:
                 "description": t.description,
                 "layout": t.layout,
                 "brand_name": t.brand_name,
+                "site_host": site_host,
             }
             for t in themes.values()
         ]
