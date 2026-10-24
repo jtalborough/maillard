@@ -1,4 +1,4 @@
-"""Copied label text uses the brand the label renderer prints."""
+"""Label copy text and the roast-code tooltip follow configured label settings."""
 
 from pathlib import Path
 from types import SimpleNamespace
