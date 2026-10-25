@@ -15,11 +15,18 @@ from maillard.roasting.plan import (
 
 def _phases():
     # Fixed waypoints test interpolation independently of machine calibration.
-    return [{"name": name, "target_time_seconds": t, "target_temp": temp}
-            for name, t, temp in [("charge", 0, 220), ("turning_point", 95, 95),
-                                 ("dry_end", 300, 160), ("maillard", 420, 177),
-                                 ("fc_start", 570, 196), ("development", 640, 203),
-                                 ("drop", 712, 210)]]
+    return [
+        {"name": name, "target_time_seconds": t, "target_temp": temp}
+        for name, t, temp in [
+            ("charge", 0, 220),
+            ("turning_point", 95, 95),
+            ("dry_end", 300, 160),
+            ("maillard", 420, 177),
+            ("fc_start", 570, 196),
+            ("development", 640, 203),
+            ("drop", 712, 210),
+        ]
+    ]
 
 
 def test_planned_bt_interpolates_between_waypoints():
@@ -54,6 +61,17 @@ def test_full_m10_plan_warns_about_extrapolation():
         gp.phases, charge_temp=gp.charge_temp, batch_size_grams=1200, target_dtr=gp.target_dtr
     )
     assert any("extrapolated" in warning for warning in warnings)
+
+
+def test_validate_rejects_drop_that_conflicts_with_level():
+    warnings = validate_plan(
+        _phases(),
+        charge_temp=200,
+        batch_size_grams=450,
+        target_dtr=20,
+        roast_level="Light",
+    )
+    assert any("rejected" in warning for warning in warnings)
 
 
 def test_validate_flags_bad_plans():

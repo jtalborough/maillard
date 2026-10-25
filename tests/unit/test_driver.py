@@ -224,15 +224,13 @@ class TestRoastEvent:
         assert RoastEvent.FC_END == 5
         assert RoastEvent.SC_START == 6
         assert RoastEvent.SC_END == 7
-        assert RoastEvent.DROP == 9  # Note: NOT 8
+        assert RoastEvent.DROP == 8
+        assert RoastEvent.COOL_END == 9
 
-    def test_drop_uses_ev_9(self) -> None:
-        """Verify DROP uses EV 9, not EV 8.
-
-        This is a critical test - the Kaleido protocol uses EV 9 for DROP.
-        Event 8 is detected via sid flag bits, not sent as a command.
-        """
-        assert RoastEvent.DROP.value == 9, "DROP must use EV 9, not EV 8"
+    def test_drop_defaults_to_ev_8(self) -> None:
+        """Community protocol: EV 8 is Drop and EV 9 is Cool End."""
+        assert RoastEvent.DROP.value == 8
+        assert KaleidoDriver().drop_event_code == 8
 
 
 class TestTimingConstants:
@@ -557,13 +555,18 @@ class TestKaleidoDriverEventTrigger:
 
     @pytest.mark.asyncio
     async def test_trigger_drop_event(self) -> None:
-        """Test triggering DROP event uses EV 9."""
+        """DROP sends EV 8 by default and honors an override."""
         driver = KaleidoDriver()
         driver._write_queue = asyncio.Queue()
 
         await driver.trigger_event(RoastEvent.DROP)
         message = await driver._write_queue.get()
-        assert message == "{[EV 9]}\n"  # Not EV 8!
+        assert message == "{[EV 8]}\n"
+
+        legacy = KaleidoDriver(drop_event_code=9)
+        legacy._write_queue = asyncio.Queue()
+        await legacy.trigger_event(RoastEvent.DROP)
+        assert await legacy._write_queue.get() == "{[EV 9]}\n"
 
     @pytest.mark.asyncio
     async def test_trigger_all_events(self) -> None:

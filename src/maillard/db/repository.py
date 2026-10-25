@@ -465,11 +465,11 @@ class RoastRepository:
         if exclude_roast_id is not None:
             filters["_id"] = {"$ne": exclude_roast_id}
 
-        from maillard.ai.calibration import roast_quality_issues
+        from maillard.ai.history import context_roast_issues
 
         # Filter before limiting so bad recent rows cannot hide usable history.
         rows = await Roast.find(filters).sort("-start_time").to_list()
-        return [r for r in rows if not roast_quality_issues(r)][:limit]
+        return [r for r in rows if not context_roast_issues(r)][:limit]
 
     async def count(self, status: RoastStatus | None = None) -> int:
         """Get total count of roasts, optionally filtered by status."""

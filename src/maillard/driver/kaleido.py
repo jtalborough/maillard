@@ -81,6 +81,7 @@ class KaleidoDriver(RoasterDriver):
         max_missed_replies: int = 3,
         stall_close_seconds: float = 12.0,
         forced_close_reconnect_delay: float = 3.0,
+        drop_event_code: int = 8,
     ) -> None:
         """Initialize the Kaleido driver.
 
@@ -98,6 +99,7 @@ class KaleidoDriver(RoasterDriver):
         # its old session lingers. Only tear down after a long, real silence.
         self._stall_close_seconds = stall_close_seconds
         self._forced_close_reconnect_delay = forced_close_reconnect_delay
+        self.drop_event_code = int(drop_event_code)
         self._forced_close = False
         self._connected_at: float | None = None
         self._missed_replies = 0
@@ -863,10 +865,9 @@ class KaleidoDriver(RoasterDriver):
         Args:
             event: The roast event to trigger
 
-        Note:
-            DROP uses EV 9, not EV 8. Event 8 is detected via sid flag bits.
         """
-        await self._send_message("EV", str(event.value))
+        code = self.drop_event_code if event == RoastEvent.DROP else int(event)
+        await self._send_message("EV", str(code))
 
     async def emergency_stop(self) -> bool:
         """Attempt all stop commands; confirm a fresh HP=0 within 1.5s."""

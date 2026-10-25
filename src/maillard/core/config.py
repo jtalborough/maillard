@@ -103,7 +103,10 @@ class MaillardConfig(BaseSettings):
     ai_auto_control_enabled: bool = False
     ai_live_model: str = "claude-haiku-4-5-20251001"
     ai_plan_model: str = "claude-sonnet-4-5-20250929"
+    auto_drop: bool = False
     cooling_fan_duration_seconds: float = Field(default=240.0, gt=0)
+    # Community Kaleido map: EV 8 = Drop, EV 9 = Cool End. Override if a machine differs.
+    kaleido_drop_event_code: int = Field(default=8, ge=1, le=20)
 
     # Database (MongoDB). Credentials are read from mounted files at connection
     # time so they never become normal settings values or environment variables.

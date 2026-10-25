@@ -69,28 +69,54 @@ const App = {
   alertTimer: null,
 
   showAlert(msg, level = 'warning', condition = null, cleared = false) {
-    level = level.toLowerCase();
-    const banner = document.getElementById('alert-banner');
+    level = String(level || 'warning').toLowerCase();
+    const critical = level === 'critical' || level === 'emergency';
     if (condition && cleared && !this.safetyAlerts.has(condition)) return;
-    clearTimeout(this.alertTimer);
     if (condition) {
       if (cleared) this.safetyAlerts.delete(condition);
-      else this.safetyAlerts.set(condition, {msg, level});
+      else this.safetyAlerts.set(condition, {msg, level, at: Date.now(), critical});
+    } else if (!cleared) {
+      const id = `notice-${Date.now()}-${this.safetyAlerts.size}`;
+      this.safetyAlerts.set(id, {
+        msg, level, at: Date.now(), critical, transient: !critical,
+      });
     }
-    if (this.safetyAlerts.size) {
-      msg = Array.from(this.safetyAlerts.values()).map(a => a.msg).join(' | ');
-      level = 'critical';
-    } else if (cleared) {
-      banner.classList.add('hidden');
+    this.renderAlerts();
+    if (!this.alertTimer) {
+      this.alertTimer = setInterval(() => this.renderAlerts(), 1000);
+    }
+  },
+
+  dismissAlert(key) {
+    this.safetyAlerts.delete(key);
+    this.renderAlerts();
+  },
+
+  renderAlerts() {
+    const stack = document.getElementById('alert-stack');
+    if (!stack) return;
+    const now = Date.now();
+    for (const [key, alert] of this.safetyAlerts) {
+      if (!alert.critical && now - alert.at > 8000) this.safetyAlerts.delete(key);
+    }
+    stack.innerHTML = '';
+    if (!this.safetyAlerts.size) {
+      stack.classList.add('hidden');
       return;
     }
-    banner.className = level === 'critical' || level === 'emergency'
-      ? 'fixed top-0 left-0 right-0 z-50 p-3 text-center font-bold text-white bg-red-600 alert-banner'
-      : 'fixed top-0 left-0 right-0 z-50 p-3 text-center font-bold text-white bg-yellow-600 alert-banner';
-    banner.textContent = msg;
-    banner.classList.remove('hidden');
-    if (!this.safetyAlerts.size) {
-      this.alertTimer = setTimeout(() => banner.classList.add('hidden'), 8000);
+    stack.classList.remove('hidden');
+    for (const [key, alert] of this.safetyAlerts) {
+      const row = document.createElement('div');
+      row.className = `alert-item ${alert.critical ? 'alert-critical' : 'alert-warning'}`;
+      const text = document.createElement('span');
+      text.textContent = alert.msg;
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.textContent = 'Close';
+      close.addEventListener('click', () => this.dismissAlert(key));
+      row.appendChild(text);
+      row.appendChild(close);
+      stack.appendChild(row);
     }
   },
 

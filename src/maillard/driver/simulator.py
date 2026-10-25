@@ -166,6 +166,7 @@ class SimulatorDriver(RoasterDriver):
         *,
         connected_callback: Callable[[], None] | None = None,
         disconnected_callback: Callable[[], None] | None = None,
+        drop_event_code: int = 8,
     ) -> None:
         """Initialize the simulator driver.
 
@@ -179,6 +180,7 @@ class SimulatorDriver(RoasterDriver):
         self._network_config = network_config or NetworkSimConfig()
         self._connected_callback = connected_callback
         self._disconnected_callback = disconnected_callback
+        self.drop_event_code = int(drop_event_code)
 
         self._is_connected = False
         self.connection_generation = 0
@@ -621,7 +623,8 @@ class SimulatorDriver(RoasterDriver):
         if self._should_fail_command():
             raise ConnectionError("Simulated command failure")
 
-        self._sim_state.ev = event.value
+        code = self.drop_event_code if event == RoastEvent.DROP else int(event)
+        self._sim_state.ev = code
 
         # Handle special events
         if event == RoastEvent.CHARGE:

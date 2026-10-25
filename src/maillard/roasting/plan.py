@@ -98,9 +98,11 @@ def validate_plan(
     batch_size_grams: int | None,
     target_dtr: float | None,
     max_bt_temp: float = 230.0,
+    roast_level: str | None = None,
 ) -> list[str]:
     """Return human-readable warnings for an implausible plan (empty = OK)."""
     from maillard.ai.calibration import get_calibration
+    from maillard.roasting.development import plan_drop_conflict
 
     warning = get_calibration(batch_size_grams)["warning"] if batch_size_grams else None
     warnings: list[str] = [warning] if warning else []
@@ -135,6 +137,9 @@ def validate_plan(
         warnings.append(f"Planned total time {total}s outside {TOTAL_TIME_RANGE}")
     if target_dtr is not None and not DTR_RANGE[0] <= target_dtr <= DTR_RANGE[1]:
         warnings.append(f"Target DTR {target_dtr}% outside {DTR_RANGE[0]}-{DTR_RANGE[1]}%")
+    conflict = plan_drop_conflict(drop_temp, roast_level, batch_g=batch_size_grams)
+    if conflict:
+        warnings.append(conflict)
     return warnings
 
 
@@ -179,16 +184,21 @@ def build_plan_from_profile(
         target_total_seconds=targets["target_total_seconds"],
         phases=phases,
         planned_curve=interpolate_planned_curve(phases),
-        warnings=list(dict.fromkeys([
-            *profile.warnings,
-            *validate_plan(
-                phases,
-                charge_temp=charge_temp,
-                batch_size_grams=batch,
-                target_dtr=target_dtr,
-                max_bt_temp=max_bt_temp,
-            ),
-        ])),
+        warnings=list(
+            dict.fromkeys(
+                [
+                    *profile.warnings,
+                    *validate_plan(
+                        phases,
+                        charge_temp=charge_temp,
+                        batch_size_grams=batch,
+                        target_dtr=target_dtr,
+                        max_bt_temp=max_bt_temp,
+                        roast_level=profile.roast_level,
+                    ),
+                ]
+            )
+        ),
         locked_at=datetime.now(UTC).isoformat() if lock else None,
     )
 

@@ -38,9 +38,11 @@ def _enqueue_site_sync(roast_id: str) -> None:
     async def enqueue() -> None:
         try:
             from maillard.sync.site import enqueue_roast_sync
+
             await enqueue_roast_sync(roast_id)
         except Exception:
             _logger.exception("Could not enqueue roast %s", roast_id)
+
     task = asyncio.create_task(enqueue())
     _sync_tasks.add(task)
     task.add_done_callback(_sync_tasks.discard)
@@ -91,6 +93,10 @@ class ControlsRequest(BaseModel):
 
 class AIToggleRequest(BaseModel):
     mode: str  # "off", "suggest", "auto"
+
+
+class AutoDropRequest(BaseModel):
+    enabled: bool = False
 
 
 class AIConfirmRequest(BaseModel):
@@ -175,6 +181,127 @@ async def _roaster_state_summary(state: ApplicationState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+async def drop_active_roast(
+    state: ApplicationState,
+    *,
+    agent: Any = None,
+    use_detected: bool = True,
+) -> dict[str, Any]:
+    """End the roast: drop event first, cooling tray (CS) last."""
+    if state.driver is None or not state.driver.is_connected:
+        return {"status": "error", "error": "Roaster not connected"}
+    if state.roast_session is None or not state.roast_session.is_active:
+        return {"status": "error", "error": "No active roast"}
+
+    from statemachine.exceptions import TransitionNotAllowed
+
+    from maillard.driver.base import RoastEvent
+    from maillard.roasting.state import InvalidStateError
+
+    session = state.roast_session
+    driver_state = state.driver.state
+    current_bt = driver_state.get("BT", 0)
+    elapsed = session.elapsed_time or 0
+    total_seconds = int(elapsed)
+    if use_detected and session.detected_drop:
+        total_seconds = int(session.detected_drop["time_seconds"])
+        current_bt = session.detected_drop["temp"]
+
+    if agent is not None:
+        block = getattr(agent, "block_auto_resume", None)
+        if callable(block):
+            block()
+
+    if state._heating_manager is not None:
+        await state._heating_manager.stop()
+        state._heating_manager = None
+    await state.driver.set_heat(0)
+    await state.driver.set_fan(100)
+    await state.driver.trigger_event(RoastEvent.DROP)
+    cooling = await state.cooling_fan().set_enabled(
+        state.driver, True, auto=True, schedule_off=True
+    )
+
+    if state._monitor is not None:
+        await state._monitor.stop()
+        state._monitor = None
+    if state._safety_monitor is not None:
+        await state._safety_monitor.stop()
+        state._safety_monitor = None
+    if state._execution_engine is not None:
+        await state._execution_engine.stop()
+        state._execution_engine = None
+
+    try:
+        session.machine.drop(temp=current_bt, time_seconds=float(total_seconds))
+        session.machine.complete()
+    except (InvalidStateError, TransitionNotAllowed) as e:
+        return {"status": "error", "error": str(e), "cooling": cooling}
+
+    session.collector.add_event("drop", float(total_seconds), current_bt)
+    curve_data = session.finalize(status="completed")
+    dtr = session.collector.calculate_dtr(drop_time=float(total_seconds))
+
+    drop_time = datetime.now(UTC)
+    if session.roast_id is not None:
+        roast = await Roast.get(session.roast_id)
+        if roast is not None:
+            for field, value in derive_roast_event_fields(curve_data.model_dump()).items():
+                setattr(roast, field, value)
+            roast.drop_time = total_seconds
+            roast.drop_temp = current_bt
+            roast.end_time = drop_time.isoformat()
+            roast.total_time_seconds = total_seconds
+            roast.connection_events = session.connection_events
+            roast.curve_data = curve_data.model_dump()
+            roast.dtr = dtr
+            roast.status = RoastStatus.COMPLETED
+            await roast.set(
+                {
+                    field: getattr(roast, field)
+                    for field in (
+                        *derive_roast_event_fields(curve_data.model_dump()),
+                        "drop_time",
+                        "drop_temp",
+                        "end_time",
+                        "total_time_seconds",
+                        "curve_data",
+                        "connection_events",
+                        "dtr",
+                        "status",
+                    )
+                }
+            )
+            from maillard.inventory.service import deduct_finished_roast
+
+            await deduct_finished_roast(roast)
+
+    if agent is not None:
+        comparison_metrics = {
+            "drop_temp": current_bt,
+            "total_time_seconds": total_seconds,
+            "dtr": dtr,
+            "fc_start_time": session.machine.fc_start_time,
+            "dry_end_time": session.machine.dry_end_time,
+            "turning_point_time": session.machine.turning_point_time,
+        }
+        asyncio.create_task(agent.generate_post_roast_comparison(comparison_metrics))
+
+    if session.roast_id:
+        _enqueue_site_sync(session.roast_id)
+
+    roast_id = session.roast_id
+    state.clear_roast_context()
+    return {
+        "status": "dropped",
+        "roast_id": roast_id,
+        "drop_temp": current_bt,
+        "total_time_seconds": total_seconds,
+        "dtr": dtr,
+        "cooling": cooling,
+    }
+
+
 def create_router() -> APIRouter:
     router = APIRouter(prefix="/api")
 
@@ -196,9 +323,7 @@ def create_router() -> APIRouter:
             roast_info["state"] = session.state_enum.value
             phase = session.current_phase
             roast_info["phase"] = phase.name if phase else None
-            roast_info["latest_ror"] = (
-                round(session.latest_ror, 1) if session.latest_ror else None
-            )
+            roast_info["latest_ror"] = round(session.latest_ror, 1) if session.latest_ror else None
             roast_info["sample_count"] = session.sample_count
             roast_info["detected_drop"] = session.detected_drop
             roast_info["auto_events"] = sorted(session.auto_events)
@@ -212,10 +337,8 @@ def create_router() -> APIRouter:
         ai_info = None
         if agent is not None:
             ai_info = {
-                "mode": agent.mode.name.lower(),
-                "auto_control_enabled": bool(
-                    getattr(agent, "auto_control_enabled", False)
-                ),
+                "mode": agent.status_mode,
+                "auto_control_enabled": bool(getattr(agent, "auto_control_enabled", False)),
             }
 
         return {
@@ -224,11 +347,17 @@ def create_router() -> APIRouter:
             "execution": engine_info,
             "heating": state._heating_manager.get_status() if state._heating_manager else None,
             "cooling": state.cooling_fan().get_status(),
+            "auto_drop": bool(getattr(state.config, "auto_drop", False)),
             "ai": ai_info,
-            "monitoring": ({"connection_lost": state._monitor.connection_lost,
-                            "link_state": state._monitor.link_state,
-                            "data_age_s": state._monitor.data_age_s}
-                           if state._monitor else None),
+            "monitoring": (
+                {
+                    "connection_lost": state._monitor.connection_lost,
+                    "link_state": state._monitor.link_state,
+                    "data_age_s": state._monitor.data_age_s,
+                }
+                if state._monitor
+                else None
+            ),
             "driver_type": getattr(state, "_driver_type", "simulator"),
             "printer_configured": bool(state.config.zebra_host or state.config.zebra_cups_name),
         }
@@ -322,9 +451,7 @@ def create_router() -> APIRouter:
             "ror_instant": round(ror_instant, 1) if ror_instant else None,
             "ror_smoothed": round(ror_smoothed, 1) if ror_smoothed else None,
             "elapsed_seconds": round(session.elapsed_time or 0, 1),
-            "current_phase": (
-                session.current_phase.name if session.current_phase else None
-            ),
+            "current_phase": (session.current_phase.name if session.current_phase else None),
             "sample_count": session.sample_count,
             "events": events,
         }
@@ -341,6 +468,9 @@ def create_router() -> APIRouter:
         if agent is not None:
             from maillard.ai.agent import AIMode
 
+            block = getattr(agent, "block_auto_resume", None)
+            if callable(block):
+                block()
             with contextlib.suppress(Exception):
                 await agent.set_mode(AIMode.OFF)
 
@@ -354,14 +484,21 @@ def create_router() -> APIRouter:
                 await state.driver.set_heating_state(False)
             except Exception:
                 _logger.critical("Dashboard heat-off failed", exc_info=True)
-        message = ("Local heat sources halted; roaster HP=0 confirmed."
-                   if confirmed else "Local heat sources halted; roaster unreachable or heat-off unconfirmed - CUT HEAT ON ROASTER using Kaleido controls.")
+        message = (
+            "Local heat sources halted; roaster HP=0 confirmed."
+            if confirmed
+            else "Local heat sources halted; roaster unreachable or heat-off unconfirmed - CUT HEAT ON ROASTER using Kaleido controls."
+        )
         from maillard.core.events import SafetyAlertEvent, SafetyAlertLevel
 
-        await state.event_bus.publish(SafetyAlertEvent(
-            level=SafetyAlertLevel.CRITICAL, message=message,
-            condition="emergency_stop_failed", cleared=confirmed,
-        ))
+        await state.event_bus.publish(
+            SafetyAlertEvent(
+                level=SafetyAlertLevel.CRITICAL,
+                message=message,
+                condition="emergency_stop_failed",
+                cleared=confirmed,
+            )
+        )
 
         _logger.warning("EMERGENCY STOP via web dashboard")
 
@@ -381,10 +518,16 @@ def create_router() -> APIRouter:
             if state.roast_session.roast_id:
                 roast = await Roast.get(state.roast_session.roast_id)
                 if roast:
-                    await roast.set({"status": "aborted", "curve_data": curve.model_dump(),
-                                     "connection_events": state.roast_session.connection_events,
-                                     "end_time": datetime.now(UTC).isoformat()})
+                    await roast.set(
+                        {
+                            "status": "aborted",
+                            "curve_data": curve.model_dump(),
+                            "connection_events": state.roast_session.connection_events,
+                            "end_time": datetime.now(UTC).isoformat(),
+                        }
+                    )
                     from maillard.inventory.service import deduct_finished_roast
+
                     await deduct_finished_roast(roast)
                     _enqueue_site_sync(roast.id)
 
@@ -441,7 +584,9 @@ def create_router() -> APIRouter:
 
                 if body.heat > 0:
                     if state._heating_manager is None:
-                        state._heating_manager = HeatingManager(state.driver, event_bus=state.event_bus)
+                        state._heating_manager = HeatingManager(
+                            state.driver, event_bus=state.event_bus
+                        )
                     await state._heating_manager.start(body.heat)
                 else:
                     if state._heating_manager is not None:
@@ -462,21 +607,18 @@ def create_router() -> APIRouter:
             return {"status": "error", "error": str(e)}
 
         agent = getattr(request.app.state, "ai_agent", None)
-        if (
-            agent is not None
-            and (body.heat is not None or body.fan is not None or body.drum is not None)
+        if agent is not None and (
+            body.heat is not None or body.fan is not None or body.drum is not None
         ):
             overridden = await agent.notify_operator_override(
                 heat=body.heat, fan=body.fan, drum=body.drum
             )
             if overridden:
-                result["ai_mode"] = agent.mode.name.lower()
+                result["ai_mode"] = agent.status_mode
                 if state._safety_monitor is not None:
                     from maillard.ai.agent import AIMode
 
-                    state._safety_monitor.set_watchdog_enforced(
-                        agent.mode == AIMode.AUTO
-                    )
+                    state._safety_monitor.set_watchdog_enforced(agent.mode == AIMode.AUTO)
 
         return result
 
@@ -525,7 +667,9 @@ def create_router() -> APIRouter:
         if state._monitor is not None:
             await state._monitor.stop()
         state._monitor = RoastMonitor(
-            state.driver, state.event_bus, state.roast_session,
+            state.driver,
+            state.event_bus,
+            state.roast_session,
             poll_interval=state.config.poll_interval,
             stale_alarm_seconds=state.config.stale_alarm_seconds,
             alarm_clear_seconds=state.config.alarm_clear_seconds,
@@ -567,10 +711,57 @@ def create_router() -> APIRouter:
             if agent is not None and _ai_is_auto(agent):
                 from maillard.ai.agent import AIMode
 
+                block = getattr(agent, "block_auto_resume", None)
+                if callable(block):
+                    block()
                 with contextlib.suppress(Exception):
                     await agent.set_mode(AIMode.OFF)
 
         return _hook
+
+    async def _start_suggestion_engine(
+        state: Any,
+        profile: Any,
+        *,
+        level: str | None,
+        batch_size_grams: int | None,
+    ) -> None:
+        """Publish FC and drop suggestions on the web charge path."""
+        from maillard.ai.calibration import get_calibration
+        from maillard.db.schemas import PhaseSchema
+        from maillard.roasting.development import drop_target_c, predicted_fc_c
+        from maillard.roasting.execution import ControlMode, RoastExecutionEngine
+
+        if state.roast_session is None or state.driver is None:
+            return
+        if state._execution_engine is not None:
+            with contextlib.suppress(Exception):
+                await state._execution_engine.stop()
+            state._execution_engine = None
+        phases: list[Any] = []
+        if profile is not None and getattr(profile, "phases", None):
+            try:
+                phases = [PhaseSchema.model_validate(phase) for phase in profile.phases]
+            except Exception:
+                _logger.warning("Profile phases unusable for suggestions", exc_info=True)
+                phases = []
+        roast_level = level or getattr(profile, "roast_level", None)
+        cal = get_calibration(batch_size_grams or 0)
+        try:
+            engine = RoastExecutionEngine(
+                driver=state.driver,
+                event_bus=state.event_bus,
+                session=state.roast_session,
+                profile_phases=phases,
+                initial_mode=ControlMode.MANUAL,
+                dry_end_threshold=float(cal["dry_end_temp"]),
+                fc_threshold=predicted_fc_c(cal, batch_size_grams),
+                drop_target_temp=drop_target_c(roast_level, cal, batch_size_grams),
+            )
+            await engine.start()
+            state._execution_engine = engine
+        except Exception:
+            _logger.warning("FC/drop suggestions unavailable", exc_info=True)
 
     # -- Charge -------------------------------------------------------------
 
@@ -582,10 +773,7 @@ def create_router() -> APIRouter:
             return {"status": "error", "error": "Roaster not connected"}
 
         # Allow charge from PREHEATING/READY_TO_CHARGE; reject only if already roasting
-        if (
-            state.roast_session is not None
-            and state.roast_session.machine.is_roasting
-        ):
+        if state.roast_session is not None and state.roast_session.machine.is_roasting:
             return {"status": "error", "error": "Roast already active"}
 
         from maillard.core.safety import SafetyMonitor
@@ -607,7 +795,9 @@ def create_router() -> APIRouter:
             profile_id=body.profile_id,
             coffee_id=body.coffee_id,
             batch_size_grams=body.batch_size_grams,
-            green_weight_grams=float(body.batch_size_grams) if body.batch_size_grams is not None else None,
+            green_weight_grams=float(body.batch_size_grams)
+            if body.batch_size_grams is not None
+            else None,
             drop_id=body.drop_id,
             start_time=charge_time.isoformat(),
             charge_temp=current_bt,
@@ -681,6 +871,7 @@ def create_router() -> APIRouter:
 
         # Freeze the selected profile into a per-roast plan (planned curve).
         plan_payload: dict[str, Any] | None = None
+        profile = None
         if body.profile_id:
             from maillard.roasting.plan import build_plan_from_profile, plan_to_dict
 
@@ -696,11 +887,21 @@ def create_router() -> APIRouter:
                 await plan.insert()
                 roast_record.plan_id = plan.id
                 plan_payload = plan_to_dict(plan)
-        await roast_record.set({"control_mode": roast_record.control_mode, "plan_id": roast_record.plan_id})
+        await roast_record.set(
+            {"control_mode": roast_record.control_mode, "plan_id": roast_record.plan_id}
+        )
 
         # Tell AI agent about the coffee for history lookup
         if agent and body.coffee_id:
             agent.set_pending_coffee_id(body.coffee_id)
+        if agent is not None:
+            agent.note_charge(roast_id)
+        await _start_suggestion_engine(
+            state,
+            profile,
+            level=profile.roast_level if profile is not None else None,
+            batch_size_grams=body.batch_size_grams,
+        )
 
         return {
             "status": "charged",
@@ -833,107 +1034,11 @@ def create_router() -> APIRouter:
 
     @router.post("/drop")
     async def execute_drop(request: Request, use_detected: bool = True) -> dict[str, Any]:
-        state = _get_state(request)
-
-        if state.driver is None or not state.driver.is_connected:
-            return {"status": "error", "error": "Roaster not connected"}
-
-        if state.roast_session is None or not state.roast_session.is_active:
-            return {"status": "error", "error": "No active roast"}
-
-        from statemachine.exceptions import TransitionNotAllowed
-
-        from maillard.driver.base import RoastEvent
-        from maillard.roasting.state import InvalidStateError
-
-        session = state.roast_session
-        driver_state = state.driver.state
-        current_bt = driver_state.get("BT", 0)
-        elapsed = session.elapsed_time or 0
-        total_seconds = int(elapsed)
-        # Beans already left the drum: record the drop at the detected BT fall, not the click.
-        if use_detected and session.detected_drop:
-            total_seconds = int(session.detected_drop["time_seconds"])
-            current_bt = session.detected_drop["temp"]
-
-        # Stop heating
-        if state._heating_manager is not None:
-            await state._heating_manager.stop()
-            state._heating_manager = None
-        await state.driver.set_heat(0)
-
-        await state.driver.set_fan(100)
-        cooling = await state.cooling_fan().set_enabled(
-            state.driver, True, auto=True, schedule_off=True
+        return await drop_active_roast(
+            _get_state(request),
+            agent=_get_ai_agent(request),
+            use_detected=use_detected,
         )
-
-        # Stop monitors
-        if state._monitor is not None:
-            await state._monitor.stop()
-            state._monitor = None
-        if state._safety_monitor is not None:
-            await state._safety_monitor.stop()
-            state._safety_monitor = None
-
-        await state.driver.trigger_event(RoastEvent.DROP)
-
-        try:
-            session.machine.drop(temp=current_bt, time_seconds=float(total_seconds))
-            session.machine.complete()
-        except (InvalidStateError, TransitionNotAllowed) as e:
-            return {"status": "error", "error": str(e)}
-
-        session.collector.add_event("drop", float(total_seconds), current_bt)
-        curve_data = session.finalize(status="completed")
-        dtr = session.collector.calculate_dtr(drop_time=float(total_seconds))
-
-        drop_time = datetime.now(UTC)
-        if session.roast_id is not None:
-            roast = await Roast.get(session.roast_id)
-            if roast is not None:
-                for field, value in derive_roast_event_fields(curve_data.model_dump()).items():
-                    setattr(roast, field, value)
-                roast.drop_time = total_seconds
-                roast.drop_temp = current_bt
-                roast.end_time = drop_time.isoformat()
-                roast.total_time_seconds = total_seconds
-                roast.connection_events = session.connection_events
-                roast.curve_data = curve_data.model_dump()
-                roast.dtr = dtr
-                roast.status = RoastStatus.COMPLETED
-                await roast.set({field: getattr(roast, field) for field in (
-                    *derive_roast_event_fields(curve_data.model_dump()), "drop_time", "drop_temp",
-                    "end_time", "total_time_seconds", "curve_data", "connection_events", "dtr", "status")})
-                from maillard.inventory.service import deduct_finished_roast
-                await deduct_finished_roast(roast)
-
-        # Fire post-roast comparison (before clearing context)
-        agent = _get_ai_agent(request)
-        if agent is not None:
-            comparison_metrics = {
-                "drop_temp": current_bt,
-                "total_time_seconds": total_seconds,
-                "dtr": dtr,
-                "fc_start_time": session.machine.fc_start_time,
-                "dry_end_time": session.machine.dry_end_time,
-                "turning_point_time": session.machine.turning_point_time,
-            }
-            asyncio.create_task(agent.generate_post_roast_comparison(comparison_metrics))
-
-        if session.roast_id:
-            _enqueue_site_sync(session.roast_id)
-
-        roast_id = session.roast_id
-        state.clear_roast_context()
-
-        return {
-            "status": "dropped",
-            "roast_id": roast_id,
-            "drop_temp": current_bt,
-            "total_time_seconds": total_seconds,
-            "dtr": dtr,
-            "cooling": cooling,
-        }
 
     # -- Cooling fan ----------------------------------------------------------
 
@@ -1125,23 +1230,25 @@ def create_router() -> APIRouter:
             coffee = await coffee_repo.get_by_id(roast.coffee_id) if roast.coffee_id else None
             cuppings = await cupping_repo.get_by_roast_id(roast.id)
             agg = aggregate_cuppings(cuppings)
-            results.append({
-                "roast_id": roast.id,
-                "date": roast.start_time[:10] if roast.start_time else None,
-                "coffee_name": coffee.name if coffee else None,
-                "charge_temp": roast.charge_temp,
-                "turning_point_time": roast.turning_point_time,
-                "dry_end_time": roast.dry_end_time,
-                "fc_start_time": roast.fc_start_time,
-                "fc_start_temp": roast.fc_start_temp,
-                "drop_temp": roast.drop_temp,
-                "drop_time": roast.drop_time,
-                "total_time_seconds": roast.total_time_seconds,
-                "dtr": roast.dtr,
-                "cupping_avg_total": agg.avg_total,
-                "cupping_count": agg.count,
-                "status": roast.status,
-            })
+            results.append(
+                {
+                    "roast_id": roast.id,
+                    "date": roast.start_time[:10] if roast.start_time else None,
+                    "coffee_name": coffee.name if coffee else None,
+                    "charge_temp": roast.charge_temp,
+                    "turning_point_time": roast.turning_point_time,
+                    "dry_end_time": roast.dry_end_time,
+                    "fc_start_time": roast.fc_start_time,
+                    "fc_start_temp": roast.fc_start_temp,
+                    "drop_temp": roast.drop_temp,
+                    "drop_time": roast.drop_time,
+                    "total_time_seconds": roast.total_time_seconds,
+                    "dtr": roast.dtr,
+                    "cupping_avg_total": agg.avg_total,
+                    "cupping_count": agg.count,
+                    "status": roast.status,
+                }
+            )
         return {"roasts": results}
 
     @router.get("/roasts/{roast_id}/similar")
@@ -1165,17 +1272,19 @@ def create_router() -> APIRouter:
         for r in similar:
             cuppings = await cupping_repo.get_by_roast_id(r.id)
             agg = aggregate_cuppings(cuppings)
-            results.append({
-                "roast_id": r.id,
-                "date": r.start_time[:10] if r.start_time else None,
-                "charge_temp": r.charge_temp,
-                "drop_temp": r.drop_temp,
-                "total_time_seconds": r.total_time_seconds,
-                "dtr": r.dtr,
-                "cupping_avg_total": agg.avg_total,
-                "cupping_count": agg.count,
-                "status": r.status,
-            })
+            results.append(
+                {
+                    "roast_id": r.id,
+                    "date": r.start_time[:10] if r.start_time else None,
+                    "charge_temp": r.charge_temp,
+                    "drop_temp": r.drop_temp,
+                    "total_time_seconds": r.total_time_seconds,
+                    "dtr": r.dtr,
+                    "cupping_avg_total": agg.avg_total,
+                    "cupping_count": agg.count,
+                    "status": r.status,
+                }
+            )
         return {"roasts": results, "coffee_id": roast.coffee_id}
 
     @router.get("/roasts/{roast_id}")
@@ -1203,9 +1312,7 @@ def create_router() -> APIRouter:
         if profile:
             d["roast_level"] = profile.roast_level
         # Include cuppings
-        d["cuppings"] = [
-            cupping_to_response(c).model_dump() for c in cuppings
-        ]
+        d["cuppings"] = [cupping_to_response(c).model_dump() for c in cuppings]
         return d
 
     @router.patch("/roasts/{roast_id}")
@@ -1244,28 +1351,45 @@ def create_router() -> APIRouter:
         roast = await Roast.get(roast_id)
         if roast is None:
             return {"status": "error", "error": "Roast not found"}
-        updates = {key: value for key, value in body.model_dump(exclude_unset=True).items()
-                   if value is not None}
+        updates = {
+            key: value
+            for key, value in body.model_dump(exclude_unset=True).items()
+            if value is not None
+        }
         if body.drop_id is not None:
             drop = await PresaleDrop.get(body.drop_id)
             if drop is None or drop.coffee_id != roast.coffee_id or drop.status == "cancelled":
                 raise HTTPException(409, "Drop must belong to the roast coffee and be active")
-        if roast.green_deducted and roast.drop_id is not None and body.drop_id is not None and body.drop_id != roast.drop_id:
-            raise HTTPException(409, "Drop already accounted; reconcile inventory before changing it")
+        if (
+            roast.green_deducted
+            and roast.drop_id is not None
+            and body.drop_id is not None
+            and body.drop_id != roast.drop_id
+        ):
+            raise HTTPException(
+                409, "Drop already accounted; reconcile inventory before changing it"
+            )
         candidate = roast.model_copy(update=updates)
-        if (candidate.green_weight_grams is not None and candidate.roasted_weight_grams is not None
-                and candidate.roasted_weight_grams > candidate.green_weight_grams):
+        if (
+            candidate.green_weight_grams is not None
+            and candidate.roasted_weight_grams is not None
+            and candidate.roasted_weight_grams > candidate.green_weight_grams
+        ):
             return {"status": "error", "error": "Roasted weight exceeds green weight"}
         # The operator can edit the suggested count; an existing explicit count is preserved.
         if candidate.bags_packed is None and candidate.roasted_weight_grams is not None:
             import math
-            updates["bags_packed"] = math.floor(candidate.roasted_weight_grams / candidate.bag_size_grams)
+
+            updates["bags_packed"] = math.floor(
+                candidate.roasted_weight_grams / candidate.bag_size_grams
+            )
         loss = compute_weight_loss(candidate.green_weight_grams, candidate.roasted_weight_grams)
         if loss is not None:
             updates["weight_loss"] = loss
         if body.drop_id is not None:
             result = await Roast.find_one({"_id": roast_id, "drop_id": roast.drop_id}).update(
-                {"$set": updates})
+                {"$set": updates}
+            )
             if result.matched_count != 1:
                 raise HTTPException(409, "Drop association changed concurrently; reload the roast")
             roast = await Roast.get(roast_id)
@@ -1276,10 +1400,16 @@ def create_router() -> APIRouter:
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         _enqueue_site_sync(roast_id)
-        return {"status": "ok", "green_weight_grams": roast.green_weight_grams,
-                "roasted_weight_grams": roast.roasted_weight_grams, "weight_loss": roast.weight_loss,
-                "bags_packed": roast.bags_packed, "bag_size_grams": roast.bag_size_grams,
-                "drop_id": roast.drop_id, "inventory": inventory}
+        return {
+            "status": "ok",
+            "green_weight_grams": roast.green_weight_grams,
+            "roasted_weight_grams": roast.roasted_weight_grams,
+            "weight_loss": roast.weight_loss,
+            "bags_packed": roast.bags_packed,
+            "bag_size_grams": roast.bag_size_grams,
+            "drop_id": roast.drop_id,
+            "inventory": inventory,
+        }
 
     @router.post("/roasts/{roast_id}/ensure-code")
     async def ensure_code(request: Request, roast_id: str) -> dict[str, Any]:
@@ -1309,9 +1439,7 @@ def create_router() -> APIRouter:
     # -- Cupping CRUD ----------------------------------------------------------
 
     @router.get("/cuppings")
-    async def list_cuppings(
-        request: Request, roast_id: str | None = None
-    ) -> list[dict[str, Any]]:
+    async def list_cuppings(request: Request, roast_id: str | None = None) -> list[dict[str, Any]]:
         _get_state(request)
         repo = CuppingRepository()
         if roast_id:
@@ -1373,6 +1501,12 @@ def create_router() -> APIRouter:
 
     # -- AI Agent ---------------------------------------------------------------
 
+    @router.post("/auto-drop")
+    async def set_auto_drop(request: Request, body: AutoDropRequest) -> dict[str, Any]:
+        state = _get_state(request)
+        state.config.auto_drop = body.enabled
+        return {"status": "ok", "auto_drop": bool(state.config.auto_drop)}
+
     @router.post("/ai/toggle")
     async def ai_toggle(request: Request, body: AIToggleRequest) -> dict[str, Any]:
         agent = _get_ai_agent(request)
@@ -1407,7 +1541,7 @@ def create_router() -> APIRouter:
                 if rank.get(new_mode, 0) > rank.get(roast.control_mode or "manual", 0):
                     roast.control_mode = new_mode
                     await roast.set({"control_mode": roast.control_mode})
-        return {"status": "ok", "mode": agent.mode.name.lower()}
+        return {"status": "ok", "mode": agent.status_mode}
 
     @router.post("/ai/confirm")
     async def ai_confirm(request: Request, body: AIConfirmRequest) -> dict[str, Any]:
@@ -1588,16 +1722,20 @@ def create_router() -> APIRouter:
                     "brew_method": result.brew_method,
                     "targets": derive_targets(result.phases),
                     "planned_curve": interpolate_planned_curve(result.phases),
-                    "warnings": list(dict.fromkeys([
-                        *result.warnings,
-                        *validate_plan(
-                            result.phases,
-                            charge_temp=result.charge_temp,
-                            batch_size_grams=result.batch_size_grams,
-                            target_dtr=result.target_dtr,
-                            max_bt_temp=state.config.max_bt_temp,
-                        ),
-                    ])),
+                    "warnings": list(
+                        dict.fromkeys(
+                            [
+                                *result.warnings,
+                                *validate_plan(
+                                    result.phases,
+                                    charge_temp=result.charge_temp,
+                                    batch_size_grams=result.batch_size_grams,
+                                    target_dtr=result.target_dtr,
+                                    max_bt_temp=state.config.max_bt_temp,
+                                ),
+                            ]
+                        )
+                    ),
                 },
             }
         except Exception as e:
@@ -1653,8 +1791,9 @@ def create_router() -> APIRouter:
         qr_url = f"{base_url}/r/{code}"
         host = urlsplit(qr_url).netloc.removeprefix("www.")
         short_url = f"{host}{urlsplit(qr_url).path}"
-        sync_ok = bool(roast.site_synced_at and roast.site_synced_code == code
-                       and roast.site_published is True)
+        sync_ok = bool(
+            roast.site_synced_at and roast.site_synced_code == code and roast.site_published is True
+        )
 
         roast_date = None
         if roast.start_time:
@@ -1670,7 +1809,11 @@ def create_router() -> APIRouter:
 
         varietal_str = None
         if coffee and coffee.varietal:
-            varietal_str = ", ".join(coffee.varietal) if isinstance(coffee.varietal, list) else str(coffee.varietal)
+            varietal_str = (
+                ", ".join(coffee.varietal)
+                if isinstance(coffee.varietal, list)
+                else str(coffee.varietal)
+            )
 
         from maillard.web.label_service import LabelData
 
@@ -1754,8 +1897,12 @@ def create_router() -> APIRouter:
         theme = _get_label_theme(request, body.get("style"))
         png_bytes = build_preview_png(result["label_data"], theme=theme)
         b64 = base64.b64encode(png_bytes).decode("ascii")
-        return {"status": "ok", "image": f"data:image/png;base64,{b64}",
-                "sync_ok": result["sync_ok"], "qr_url": result["qr_url"]}
+        return {
+            "status": "ok",
+            "image": f"data:image/png;base64,{b64}",
+            "sync_ok": result["sync_ok"],
+            "qr_url": result["qr_url"],
+        }
 
     @router.post("/labels/print")
     async def label_print(request: Request) -> dict[str, Any]:
@@ -1778,14 +1925,19 @@ def create_router() -> APIRouter:
 
         roast = result["roast"]
         from maillard.web.label_service import require_packed_weights
+
         require_packed_weights(roast)
         if body.get("override") is True:
             _logger.warning("Printing label with readiness override for roast %s", roast_id)
         elif not roast.site_synced_at or roast.site_synced_code != roast.code:
             return {"status": "error", "error": "Sync to site first", "code": "sync_required"}
         elif roast.site_published is not True:
-            return {"status": "error", "error": f"Roast is not published: {roast.site_warnings}",
-                    "code": "not_published", "warnings": roast.site_warnings}
+            return {
+                "status": "error",
+                "error": f"Roast is not published: {roast.site_warnings}",
+                "code": "not_published",
+                "warnings": roast.site_warnings,
+            }
         _apply_label_overrides(result["label_data"], body.get("overrides"))
         theme = _get_label_theme(request, body.get("style"))
         transport = _label_transport(state.config)
@@ -1795,10 +1947,13 @@ def create_router() -> APIRouter:
         try:
             if transport == "cups":
                 try:
-                    print_via_cups(build_preview_png(result["label_data"], theme=theme),
-                                   state.config.zebra_cups_name,
-                                   darkness=state.config.zebra_cups_darkness,
-                                   label_width=theme.width_inches, label_height=theme.height_inches)
+                    print_via_cups(
+                        build_preview_png(result["label_data"], theme=theme),
+                        state.config.zebra_cups_name,
+                        darkness=state.config.zebra_cups_darkness,
+                        label_width=theme.width_inches,
+                        label_height=theme.height_inches,
+                    )
                 except FileNotFoundError:
                     if state.config.zebra_transport != "auto" or not state.config.zebra_host:
                         raise
@@ -1806,14 +1961,21 @@ def create_router() -> APIRouter:
                     transport = "tcp"
                     fallback = True
             if transport == "tcp":
-                send_to_printer(build_zpl(result["label_data"], theme=theme),
-                                state.config.zebra_host, state.config.zebra_port)
+                send_to_printer(
+                    build_zpl(result["label_data"], theme=theme),
+                    state.config.zebra_host,
+                    state.config.zebra_port,
+                )
         except Exception as e:
             _logger.exception("Failed to send label to printer")
             return {"status": "error", "error": f"Printer error: {e}"}
-        return {"status": "ok", "message": "Label sent to printer" +
-                (" (lp unavailable; fell back to TCP)" if fallback else ""),
-                "printer": transport, "fallback": fallback}
+        return {
+            "status": "ok",
+            "message": "Label sent to printer"
+            + (" (lp unavailable; fell back to TCP)" if fallback else ""),
+            "printer": transport,
+            "fallback": fallback,
+        }
 
     def _label_transport(config):
         if config.zebra_transport == "tcp":
@@ -1827,15 +1989,21 @@ def create_router() -> APIRouter:
         result = await _build_label_data(request, roast_id)
         if result is None:
             return {"status": "error", "error": "Roast not found"}
-        return {"weights_ok": result["roast"].roasted_weight_grams is not None and result["roast"].bags_packed is not None, "sync_ok": result["sync_ok"], "qr_url": result["qr_url"],
-                "code": result["roast"].code,
-                "published": result["roast"].site_published,
-                "warnings": result["roast"].site_warnings,
-                "site_sync_status": result["roast"].site_sync_status,
-                "printer": _label_transport(_get_state(request).config)}
+        return {
+            "weights_ok": result["roast"].roasted_weight_grams is not None
+            and result["roast"].bags_packed is not None,
+            "sync_ok": result["sync_ok"],
+            "qr_url": result["qr_url"],
+            "code": result["roast"].code,
+            "published": result["roast"].site_published,
+            "warnings": result["roast"].site_warnings,
+            "site_sync_status": result["roast"].site_sync_status,
+            "printer": _label_transport(_get_state(request).config),
+        }
 
     def site_client(request: Request):
         from maillard.sync.site import SiteSyncClient
+
         client = getattr(request.app.state, "site_sync_client", None)
         if client is None:
             client = SiteSyncClient(_get_state(request).config)
@@ -1845,30 +2013,41 @@ def create_router() -> APIRouter:
     @router.post("/roasts/{roast_id}/sync")
     async def sync_roast_endpoint(request: Request, roast_id: str) -> dict[str, Any]:
         from maillard.sync.site import sync_roast_now
+
         return await sync_roast_now(roast_id, site_client(request))
 
     @router.get("/roasts/{roast_id}/sync")
     async def roast_sync_state(request: Request, roast_id: str) -> dict[str, Any]:
         from maillard.db.models import SyncOutbox
+
         roast = await Roast.get(roast_id)
         item = await SyncOutbox.find_one(SyncOutbox.roast_id == roast_id)
-        return {"configured": site_client(request).is_configured,
-                "outbox": item.model_dump(mode="json") if item else None,
-                "sync_status": roast.site_sync_status if roast else None,
-                "url": roast.site_url if roast else None,
-                "synced_at": roast.site_synced_at if roast else None,
-                "synced_code": roast.site_synced_code if roast else None,
-                "code": roast.code if roast else None}
+        return {
+            "configured": site_client(request).is_configured,
+            "outbox": item.model_dump(mode="json") if item else None,
+            "sync_status": roast.site_sync_status if roast else None,
+            "url": roast.site_url if roast else None,
+            "synced_at": roast.site_synced_at if roast else None,
+            "synced_code": roast.site_synced_code if roast else None,
+            "code": roast.code if roast else None,
+        }
 
     @router.get("/sync/status")
     async def sync_status(request: Request) -> dict[str, Any]:
         from maillard.db.models import SyncOutbox
+
         client = site_client(request)
-        counts = {status: await SyncOutbox.find(SyncOutbox.status == status).count()
-                  for status in ("pending", "failed", "synced")}
+        counts = {
+            status: await SyncOutbox.find(SyncOutbox.status == status).count()
+            for status in ("pending", "failed", "synced")
+        }
         recent = await SyncOutbox.find_all().sort("-updated_at").limit(20).to_list()
-        return {"configured": client.is_configured, "site_url": client.config.site_url,
-                **counts, "recent": [item.model_dump(mode="json") for item in recent]}
+        return {
+            "configured": client.is_configured,
+            "site_url": client.config.site_url,
+            **counts,
+            "recent": [item.model_dump(mode="json") for item in recent],
+        }
 
     @router.get("/qr/{coffee_slug}")
     async def generate_qr(request: Request, coffee_slug: str) -> Any:
@@ -1896,5 +2075,6 @@ def create_router() -> APIRouter:
         return StreamingResponse(buf, media_type="image/png")
 
     from maillard.web.inventory_routes import router as inventory_router
+
     router.include_router(inventory_router)
     return router

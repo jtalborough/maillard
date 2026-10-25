@@ -10,8 +10,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from maillard.ai.calibration import roast_quality_issues
 from maillard.db.aggregation import aggregate_cuppings
 from maillard.db.models import Roast
+from maillard.roasting.development import FAR_BELOW_LEVEL_C, drop_target_c
 
 _logger = logging.getLogger(__name__)
 
@@ -62,6 +64,39 @@ class RoastHistory:
     best_roast: PastRoastSummary | None = None
 
 
+def context_roast_issues(roast: Any) -> list[str]:
+    """History-context exclusions on top of the shared quality check.
+
+    A completed roast with a drop temperature and no first crack, or a drop
+    far below the level's calibrated temperature, is not a pace reference.
+    """
+    issues = list(roast_quality_issues(roast))
+    row = dict(roast) if isinstance(roast, dict) else roast.model_dump()
+    fc = row.get("fc_start_time")
+    drop_time = row.get("drop_time")
+    drop_temp = row.get("drop_temp")
+    dropped_early = drop_temp is not None and fc is None
+    dropped_early = dropped_early or (
+        isinstance(fc, (int, float))
+        and not isinstance(fc, bool)
+        and isinstance(drop_time, (int, float))
+        and not isinstance(drop_time, bool)
+        and drop_time < fc
+    )
+    if dropped_early:
+        issues.append("dropped before first crack")
+    if isinstance(drop_temp, (int, float)) and not isinstance(drop_temp, bool):
+        level = row.get("roast_level")
+        if level:
+            floor = drop_target_c(str(level), batch_g=row.get("batch_size_grams"))
+        else:
+            temps = drop_target_c("light", batch_g=row.get("batch_size_grams"))
+            floor = temps
+        if float(drop_temp) < float(floor) - FAR_BELOW_LEVEL_C:
+            issues.append("drop far below level temperature")
+    return issues
+
+
 def _build_summary(roast: Roast, cuppings: Any = None) -> PastRoastSummary:
     """Build a PastRoastSummary from a Roast document.
 
@@ -77,7 +112,10 @@ def _build_summary(roast: Roast, cuppings: Any = None) -> PastRoastSummary:
 
     def feedback(key: str) -> str | None:
         values = [getattr(c, key, None) for c in (cuppings or [])]
-        return " ".join(" ".join(v.split()) for v in values if isinstance(v, str) and v.strip())[:240] or None
+        return (
+            " ".join(" ".join(v.split()) for v in values if isinstance(v, str) and v.strip())[:240]
+            or None
+        )
 
     return PastRoastSummary(
         roast_id=roast.id,
@@ -135,9 +173,7 @@ async def load_roast_history(
             return None
 
         roast_repo = RoastRepository()
-        roasts = await roast_repo.get_completed_by_coffee_id(
-            coffee_id, limit=limit
-        )
+        roasts = await roast_repo.get_completed_by_coffee_id(coffee_id, limit=limit)
 
         # Load cuppings per roast (MongoDB has no ORM relationships)
         cupping_repo = CuppingRepository()
@@ -154,7 +190,9 @@ async def load_roast_history(
             coffee_processing=coffee.processing,
             coffee_altitude=coffee.altitude_m if coffee.altitude_m is not None else coffee.altitude,
             coffee_density=coffee.density,
-            coffee_moisture=coffee.moisture_pct if coffee.moisture_pct is not None else coffee.moisture,
+            coffee_moisture=coffee.moisture_pct
+            if coffee.moisture_pct is not None
+            else coffee.moisture,
             coffee_density_g_l=coffee.density_g_l,
             past_roasts=summaries,
             best_roast=best,
@@ -212,7 +250,11 @@ def format_history_for_prompt(history: RoastHistory | None) -> str | None:
 
     # Other roasts
     for s in history.past_roasts:
-        if history.best_roast and history.best_roast.cupping_avg_total is not None and s.roast_id == history.best_roast.roast_id:
+        if (
+            history.best_roast
+            and history.best_roast.cupping_avg_total is not None
+            and s.roast_id == history.best_roast.roast_id
+        ):
             continue  # Already shown as BEST
         parts = [s.date]
         if s.charge_temp is not None:

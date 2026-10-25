@@ -83,7 +83,8 @@ class ApplicationState:
     def cooling_fan(self) -> CoolingFanController:
         if self._cooling is None:
             self._cooling = CoolingFanController(
-                duration_seconds=self.config.cooling_fan_duration_seconds
+                duration_seconds=self.config.cooling_fan_duration_seconds,
+                event_bus=self.event_bus,
             )
         else:
             self._cooling.configure(self.config.cooling_fan_duration_seconds)
@@ -229,12 +230,16 @@ class ApplicationState:
         """
         dtype = driver_type or self._driver_type
 
+        drop_code = int(self.config.kaleido_drop_event_code)
         if dtype == "simulator":
-            driver: RoasterDriver = SimulatorDriver()
+            driver: RoasterDriver = SimulatorDriver(drop_event_code=drop_code)
             _logger.info("Created simulator driver")
         elif dtype == "kaleido":
-            driver = KaleidoDriver(ping_interval=self.config.kaleido_ping_interval,
-                                   ping_timeout=self.config.kaleido_ping_timeout)
+            driver = KaleidoDriver(
+                ping_interval=self.config.kaleido_ping_interval,
+                ping_timeout=self.config.kaleido_ping_timeout,
+                drop_event_code=drop_code,
+            )
             _logger.info("Created Kaleido driver")
         else:
             raise ValueError(f"Unknown driver type: {dtype!r}. Must be 'kaleido' or 'simulator'.")
