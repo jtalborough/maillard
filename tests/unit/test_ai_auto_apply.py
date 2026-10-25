@@ -265,6 +265,8 @@ def test_stale_fc_denial_is_dropped_from_the_prompt():
     text = built[0]["content"]
     assert "Drop target is 201C" in text
     assert "After FC, heat may only stay the same or decrease." in text
+    assert "do not go below 35% heat" in text
+    assert "above 11C/min" in text
     assert "Previous decisions" in text
     assert "heat 70%" in text
     assert "rejected" in text

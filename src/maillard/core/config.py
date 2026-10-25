@@ -104,6 +104,7 @@ class MaillardConfig(BaseSettings):
     ai_live_model: str = "claude-haiku-4-5-20251001"
     ai_plan_model: str = "claude-sonnet-4-5-20250929"
     auto_drop: bool = False
+    development_heat_floor: int = Field(default=35, ge=0, le=100)
     cooling_fan_duration_seconds: float = Field(default=240.0, gt=0)
     # Community Kaleido map: EV 8 = Drop, EV 9 = Cool End. Override if a machine differs.
     kaleido_drop_event_code: int = Field(default=8, ge=1, le=20)

@@ -39,6 +39,9 @@ from maillard.core.events import (
 from maillard.core.heating import HeatingManager
 from maillard.roasting.curve import DuplicateEventError
 from maillard.roasting.development import (
+    DEV_HEAT_FLOOR,
+    ROR_HOLD_BELOW,
+    ROR_STEP_ABOVE,
     DevCommand,
     DevelopmentController,
     DevSample,
@@ -125,7 +128,8 @@ After FC is marked focus on development, DTR and drop.
 - RoR > 20 early or > 15 after dry end: reduce heat aggressively.
 - RoR negative after TP: increase heat immediately.
 - From about 5C before the predicted FC temperature, step heat down so RoR declines.
-- After FC is marked, heat may only stay the same or decrease. Never raise heat after first crack.
+- After FC is marked, heat may only stay the same or decrease, and never below the development heat floor. Step heat down only while RoR is above about 11C/min. Hold heat while RoR is in about 8-11C/min or if it falls below about 8.
+- At 6C above the drop target the second-crack guard sets heat to 0. Drop and emergency stop also override the floor.
 - The drop target is the calibrated temperature for the roast level. A plan drop temperature that conflicts with it is rejected.
 
 ## Past Roast Context
@@ -1114,7 +1118,13 @@ class RoastAIAgent:
             dtr_high=_dtr_high,
         )
         auto = bool(getattr(self._state.config, "auto_drop", False)) and self._mode == AIMode.AUTO
-        cmd = self._development.step(sample, auto_drop=auto and not self._auto_drop_sent)
+        config = getattr(self._state, "config", None)
+        floor = getattr(config, "development_heat_floor", DEV_HEAT_FLOOR)
+        cmd = self._development.step(
+            sample,
+            auto_drop=auto and not self._auto_drop_sent,
+            heat_floor=int(floor),
+        )
         decision["heat"] = cmd.heat
         decision["fan"] = cmd.fan
         decision["drum"] = cmd.drum
@@ -1232,13 +1242,20 @@ class RoastAIAgent:
         target = drop_target_c(level, cal, batch)
         (dtr_low, dtr_high), (dev_min, dev_max) = development_band(level)
         fc_predicted = predicted_fc_c(cal, batch)
+        config = getattr(self._state, "config", None)
+        floor = int(getattr(config, "development_heat_floor", DEV_HEAT_FLOOR))
         sections.append(
             f"## Drop target\n"
             f"Drop target is {target:.0f}C for {level or 'Medium'} "
             f"(DTR {dtr_low:.0f}-{dtr_high:.0f}%, development {dev_min}-{dev_max}s). "
             f"Predicted FC is {fc_predicted:.0f}C. "
             "From 5C before that FC, step heat down so RoR declines. "
-            "After FC, heat may only stay the same or decrease."
+            "After FC, heat may only stay the same or decrease. "
+            f"Between FC and drop, do not go below {floor}% heat. "
+            f"Step heat down only while RoR is above {ROR_STEP_ABOVE:.0f}C/min; "
+            f"hold heat in the {ROR_HOLD_BELOW:.0f}-{ROR_STEP_ABOVE:.0f}C/min band "
+            "and if RoR falls below that. "
+            "The second-crack guard, drop, and emergency stop still set heat to 0."
         )
         plan = self._locked_plan
         if plan:

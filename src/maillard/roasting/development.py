@@ -8,6 +8,9 @@ from maillard.ai.calibration import get_calibration
 
 APPROACH_C = 5.0
 HEAT_STEP = 5
+DEV_HEAT_FLOOR = 35
+ROR_STEP_ABOVE = 11.0
+ROR_HOLD_BELOW = 8.0
 SC_PROMPT_C = 4.0
 SC_HEAT_ZERO_C = 6.0
 DROP_CONFLICT_C = 4.0
@@ -111,9 +114,10 @@ def _bound(value: int) -> int:
 
 
 class DevelopmentController:
-    """Steps heat down into first crack and refuses heat increases after it."""
+    """Steps heat down into first crack and holds a floor through development."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, heat_floor: int = DEV_HEAT_FLOOR) -> None:
+        self._heat_floor = _bound(heat_floor)
         self._last_ror: float | None = None
         self._drop_sent = False
         self._forced_sent = False
@@ -123,7 +127,13 @@ class DevelopmentController:
         self._drop_sent = False
         self._forced_sent = False
 
-    def step(self, sample: DevSample, *, auto_drop: bool = False) -> DevCommand:
+    def step(
+        self,
+        sample: DevSample,
+        *,
+        auto_drop: bool = False,
+        heat_floor: int | None = None,
+    ) -> DevCommand:
         current = _bound(sample.heat)
         ai_heat = current if sample.ai_heat is None else _bound(sample.ai_heat)
         ai_fan = sample.fan if sample.ai_fan is None else _bound(sample.ai_fan)
@@ -143,15 +153,25 @@ class DevelopmentController:
         heat = ai_heat
         reason = ""
         constrained = False
+        floor = self._heat_floor if heat_floor is None else _bound(heat_floor)
         if zero:
             heat = 0
             constrained = True
             reason = "second-crack guard"
-        elif after_fc or in_approach:
+        elif after_fc:
+            cut = sample.ror is not None and sample.ror > ROR_STEP_ABOVE
+            hold = sample.ror is None or sample.ror < ROR_HOLD_BELOW or sample.ror <= ROR_STEP_ABOVE
+            if cut and not hold:
+                heat = max(floor, current - HEAT_STEP)
+            else:
+                heat = current if current >= floor else floor
+            constrained = True
+            reason = "after first crack"
+        elif in_approach:
             ceiling = current if declining else max(0, current - HEAT_STEP)
             heat = min(heat, ceiling, current)
             constrained = True
-            reason = "after first crack" if after_fc else "approaching first crack"
+            reason = "approaching first crack"
 
         dev_s = None
         dtr = None

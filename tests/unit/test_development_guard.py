@@ -12,6 +12,7 @@ def _sample(
     fc_marked: bool,
     elapsed: float | None = None,
     fc_elapsed: float | None = None,
+    ai_heat: int = 75,
 ) -> DevSample:
     return DevSample(
         bt=bt,
@@ -20,7 +21,7 @@ def _sample(
         heat=heat,
         fan=40,
         drum=55,
-        ai_heat=75,
+        ai_heat=ai_heat,
         ai_fan=40,
         ai_drum=55,
         fc_predicted=186.0,
@@ -65,7 +66,7 @@ def test_replay_steps_heat_down_and_guards_second_crack():
     assert approach.reason == "approaching first crack"
 
     at_fc = step(186, 9.5, True, elapsed=603, fc_elapsed=603)
-    assert at_fc.heat == 65
+    assert at_fc.heat == 70
     assert at_fc.heat < 75
     assert at_fc.reason == "after first crack"
 
@@ -92,6 +93,60 @@ def test_replay_steps_heat_down_and_guards_second_crack():
     assert zero.heat == 0
     assert zero.zero_heat
     assert heats == sorted(heats, reverse=True)
+
+
+def test_development_floor_holds_band_and_blocks_a_cut_to_zero():
+    ctrl = DevelopmentController()
+    held = ctrl.step(
+        _sample(bt=192, ror=9.0, heat=60, fc_marked=True, ai_heat=0, elapsed=640, fc_elapsed=600)
+    )
+    assert held.heat == 60
+    low = ctrl.step(
+        _sample(bt=193, ror=7.4, heat=55, fc_marked=True, ai_heat=0, elapsed=660, fc_elapsed=600)
+    )
+    assert low.heat == 55
+    at_edge = ctrl.step(
+        _sample(bt=194, ror=11.0, heat=50, fc_marked=True, ai_heat=0, elapsed=680, fc_elapsed=600)
+    )
+    assert at_edge.heat == 50
+
+    cutting = DevelopmentController()
+    heat = 75
+    for _ in range(12):
+        cmd = cutting.step(
+            _sample(
+                bt=194,
+                ror=14.0,
+                heat=heat,
+                fc_marked=True,
+                ai_heat=0,
+                elapsed=700,
+                fc_elapsed=600,
+            )
+        )
+        heat = cmd.heat
+        assert heat >= 35
+    assert heat == 35
+
+    custom = DevelopmentController(heat_floor=50)
+    raised = custom.step(
+        _sample(bt=190, ror=6.0, heat=0, fc_marked=True, ai_heat=0, elapsed=640, fc_elapsed=600)
+    )
+    assert raised.heat == 50
+    one = custom.step(
+        _sample(bt=192, ror=13.0, heat=70, fc_marked=True, ai_heat=0, elapsed=660, fc_elapsed=600)
+    )
+    assert one.heat == 65
+
+
+def test_second_crack_guard_overrides_heat_floor():
+    ctrl = DevelopmentController(heat_floor=35)
+    guarded = ctrl.step(
+        _sample(bt=207, ror=12.0, heat=40, fc_marked=True, ai_heat=80, elapsed=760, fc_elapsed=600)
+    )
+    assert guarded.heat == 0
+    assert guarded.zero_heat
+    assert guarded.reason == "second-crack guard"
 
 
 def test_auto_drop_only_on_the_target_edge():
