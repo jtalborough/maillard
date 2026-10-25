@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from maillard.core.cooling import CoolingFanController
+from maillard.core.cooling import UNCONFIRMED_MESSAGE, CoolingFanController
+from maillard.core.events import EventBus, SafetyAlertEvent
 
 
 def _sim_driver(*, connected: bool = True, cs: int = 0):
@@ -44,11 +45,13 @@ async def test_cooling_enable_confirms_and_reports_status():
 
 @pytest.mark.asyncio
 async def test_cooling_unconfirmed_when_roaster_silent(caplog):
-    ctrl = CoolingFanController(duration_seconds=60)
+    bus = EventBus()
+    sub = await bus.subscribe(SafetyAlertEvent)
+    ctrl = CoolingFanController(duration_seconds=60, event_bus=bus)
     driver = SimpleNamespace(
         is_connected=True,
         _send_message=AsyncMock(),
-        get_state_value=lambda key: 0,
+        get_state_value=lambda _key: 0,
         state={"CS": 0},
     )
 
@@ -57,7 +60,30 @@ async def test_cooling_unconfirmed_when_roaster_silent(caplog):
 
     assert status["enabled"] is True
     assert status["confirmed"] is False
+    assert driver._send_message.await_count == 2
     assert "did not confirm" in caplog.text
+    event = await sub.get(timeout=1.0)
+    assert event.condition == "cooling_unconfirmed"
+    assert event.message == UNCONFIRMED_MESSAGE
+    assert event.cleared is False
+    await sub.close()
+    await ctrl.stop()
+
+
+@pytest.mark.asyncio
+async def test_cooling_resends_cs_after_reconnect():
+    ctrl = CoolingFanController(duration_seconds=30)
+    driver = _sim_driver()
+
+    await ctrl.set_enabled(driver, True, auto=True, schedule_off=False)
+    assert driver._send_message.await_count == 1
+    driver.is_connected = False
+    await asyncio.sleep(0.45)
+    driver.is_connected = True
+    await asyncio.sleep(0.7)
+
+    assert driver._send_message.await_count >= 2
+    assert driver._sim_state.cs == 1
     await ctrl.stop()
 
 

@@ -85,19 +85,17 @@ def create_app(state: ApplicationState) -> FastAPI:
         )
 
     @app.exception_handler(HTTPException)
-    async def http_exception_handler(
-        _request: Request, exc: HTTPException
-    ) -> JSONResponse:
+    async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
             content={"error": exc.detail},
         )
 
     @app.exception_handler(Exception)
-    async def unhandled_exception_handler(
-        request: Request, exc: Exception
-    ) -> JSONResponse:
-        _logger.error("Unhandled exception on %s %s", request.method, request.url.path, exc_info=exc)
+    async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        _logger.error(
+            "Unhandled exception on %s %s", request.method, request.url.path, exc_info=exc
+        )
         return JSONResponse(
             status_code=500,
             content={"error": "Internal server error"},
@@ -117,6 +115,13 @@ def create_app(state: ApplicationState) -> FastAPI:
             client = _create_ai_client(api_key)
             ai_agent = RoastAIAgent(state, client, model=model)
             app.state.ai_agent = ai_agent  # type: ignore[attr-defined]
+
+            async def _auto_drop() -> None:
+                from maillard.web.routes import drop_active_roast
+
+                await drop_active_roast(state, agent=getattr(app.state, "ai_agent", None))
+
+            state.auto_drop_callback = _auto_drop  # type: ignore[attr-defined]
             _logger.info(
                 "AI agent initialized (%s, %s)",
                 model,
@@ -127,7 +132,9 @@ def create_app(state: ApplicationState) -> FastAPI:
             app.state.ai_agent = None  # type: ignore[attr-defined]
     else:
         app.state.ai_agent = None  # type: ignore[attr-defined]
-        _logger.info("No ANTHROPIC_API_KEY — AI agent disabled (run `claude setup-token` for Max/Pro)")
+        _logger.info(
+            "No ANTHROPIC_API_KEY — AI agent disabled (run `claude setup-token` for Max/Pro)"
+        )
 
     # CORS — allow all private/LAN IPs by default (home appliance),
     # or restrict via MAILLARD_CORS_ORIGINS env var.
@@ -159,9 +166,7 @@ def create_app(state: ApplicationState) -> FastAPI:
     async def version() -> JSONResponse:
         from maillard.__version__ import BUILD_DATE, GIT_SHA, VERSION
 
-        return JSONResponse(
-            {"version": VERSION, "git_sha": GIT_SHA, "build_date": BUILD_DATE}
-        )
+        return JSONResponse({"version": VERSION, "git_sha": GIT_SHA, "build_date": BUILD_DATE})
 
     # Health check — before static mount so catch-all doesn't swallow it
     @app.get("/health")
@@ -175,9 +180,7 @@ def create_app(state: ApplicationState) -> FastAPI:
                 await client.admin.command("ping")
                 mongo_ok = True
             except Exception as exc:
-                _logger.warning(
-                    "MongoDB health check failed (error_type=%s)", type(exc).__name__
-                )
+                _logger.warning("MongoDB health check failed (error_type=%s)", type(exc).__name__)
 
         # Roaster state: not_configured / disconnected / connected
         if state.driver is None:

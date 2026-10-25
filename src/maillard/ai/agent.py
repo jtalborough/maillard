@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import time
 from datetime import UTC, datetime
 from enum import Enum, auto
@@ -28,8 +29,27 @@ import anthropic
 from maillard.ai.calibration import format_calibration, get_calibration, load_calibration
 from maillard.ai.history import format_history_for_prompt, load_roast_history
 from maillard.core.config import get_config
-from maillard.core.events import AISuggestionEvent, AITranscriptEvent, SafetyAlertEvent, SafetyAlertLevel
+from maillard.core.events import (
+    AISuggestionEvent,
+    AITranscriptEvent,
+    DropSuggested,
+    SafetyAlertEvent,
+    SafetyAlertLevel,
+)
+from maillard.core.heating import HeatingManager
 from maillard.roasting.curve import DuplicateEventError
+from maillard.roasting.development import (
+    DEV_HEAT_FLOOR,
+    ROR_HOLD_BELOW,
+    ROR_STEP_ABOVE,
+    DevCommand,
+    DevelopmentController,
+    DevSample,
+    development_band,
+    drop_target_c,
+    plan_drop_conflict,
+    predicted_fc_c,
+)
 from maillard.roasting.state import RoastPhase
 
 if TYPE_CHECKING:
@@ -41,6 +61,19 @@ _logger = logging.getLogger(__name__)
 ANALYSIS_INTERVAL = 8.0  # seconds between analysis calls
 MAX_CURVE_POINTS = 40  # data points in context
 AUTO_FAIL_FALLBACK = 3
+LINK_BLIP_MANUAL_S = 60.0
+LINK_BLIP_AFTER_FC_S = 30.0
+_FC_DENIAL = re.compile(
+    r"\b(no|not|without|haven't|havent|hasn't|hasnt|didn't|didnt)\b.{0,40}\b(first crack|fc)\b"
+    r"|\b(first crack|fc)\b.{0,24}\b(yet|not)\b"
+    r"|\bno fc\b|\bfc yet\b|\bno first crack\b",
+    re.IGNORECASE,
+)
+
+
+def message_contradicted(message: str, marked: set[str]) -> bool:
+    """True when an operator note is already contradicted by a later marked event."""
+    return "fc_start" in marked and _FC_DENIAL.search(message) is not None
 
 
 def _clamp_control(value: Any) -> int | None:
@@ -94,6 +127,10 @@ After FC is marked focus on development, DTR and drop.
 - BT > 230C: suggest drop immediately.
 - RoR > 20 early or > 15 after dry end: reduce heat aggressively.
 - RoR negative after TP: increase heat immediately.
+- From about 5C before the predicted FC temperature, step heat down so RoR declines.
+- After FC is marked, heat may only stay the same or decrease, and never below the development heat floor. Step heat down only while RoR is above about 11C/min. Hold heat while RoR is in about 8-11C/min or if it falls below about 8.
+- At 6C above the drop target the second-crack guard sets heat to 0. Drop and emergency stop also override the floor.
+- The drop target is the calibrated temperature for the roast level. A plan drop temperature that conflicts with it is rejected.
 
 ## Past Roast Context
 If "Past Roasts" is present, compare current pace to the best past roast.
@@ -123,7 +160,9 @@ Note: turning_point and fc_start are detected automatically — do not suggest t
 class RoastAIAgent:
     """Background task calling Claude every ~8s during active roast."""
 
-    def __init__(self, state: ApplicationState, client: anthropic.AsyncAnthropic, *, model: str | None = None) -> None:
+    def __init__(
+        self, state: ApplicationState, client: anthropic.AsyncAnthropic, *, model: str | None = None
+    ) -> None:
         self._locked_plan: dict[str, Any] | None = None
         self._plan_roast_id: str | None = None
         self._state = state
@@ -154,10 +193,23 @@ class RoastAIAgent:
         self._last_prompt_snapshot: dict[str, Any] | None = None
         self._auto_fail_count = 0
         self._fallback_reason: str | None = None
+        self._link_paused = False
+        self._link_paused_at: float | None = None
+        self._resume_blocked = False
+        self._last_controls: dict[str, int] = {}
+        self._development = DevelopmentController()
+        self._guard_roast_id: str | None = None
+        self._auto_drop_sent = False
 
     @property
     def mode(self) -> AIMode:
         return self._mode
+
+    @property
+    def status_mode(self) -> str:
+        if self._mode == AIMode.AUTO and self._link_paused:
+            return "auto-paused"
+        return self._mode.name.lower()
 
     @property
     def last_suggestion(self) -> dict[str, Any] | None:
@@ -195,6 +247,8 @@ class RoastAIAgent:
         if mode == AIMode.AUTO:
             self._auto_fail_count = 0
             self._fallback_reason = None
+            self._resume_blocked = False
+            await self._clear_fallback_alert()
 
         if mode == AIMode.OFF:
             await self.stop()
@@ -208,8 +262,14 @@ class RoastAIAgent:
         fan: int | None = None,
         drum: int | None = None,
     ) -> bool:
-        if self._mode != AIMode.AUTO:
+        if self._mode != AIMode.AUTO and not self._link_paused:
             return False
+        if heat is not None:
+            self._last_controls["heat"] = heat
+        if fan is not None:
+            self._last_controls["fan"] = fan
+        if drum is not None:
+            self._last_controls["drum"] = drum
         parts = []
         if heat is not None:
             parts.append(f"heat={heat}%")
@@ -217,15 +277,42 @@ class RoastAIAgent:
             parts.append(f"fan={fan}%")
         if drum is not None:
             parts.append(f"drum={drum}%")
-        reason = "Operator override (" + ", ".join(parts or ["controls"]) + ")"
-        await self._fallback_from_auto(reason, stop_loop=True)
+        message = "Operator adjusted " + ", ".join(parts or ["controls"])
+        entry = self._record_transcript("operator", "action", message)
+        with contextlib.suppress(Exception):
+            await self._publish_transcript_entry(entry)
         return True
 
-    async def _fallback_from_auto(self, reason: str, *, stop_loop: bool = False) -> None:
-        if self._mode != AIMode.AUTO:
+    def note_charge(self, roast_id: str | None) -> None:
+        """A new charge may resume auto after a previous drop or emergency stop."""
+        self._resume_blocked = False
+        self._link_paused = False
+        self._link_paused_at = None
+        self._auto_drop_sent = False
+        if roast_id != self._guard_roast_id:
+            self._guard_roast_id = roast_id
+            self._development.reset()
+
+    def block_auto_resume(self) -> None:
+        """Drop and emergency stop outrank a pending auto resume."""
+        self._resume_blocked = True
+        self._link_paused = False
+        self._link_paused_at = None
+
+    async def _fallback_from_auto(
+        self,
+        reason: str,
+        *,
+        stop_loop: bool = False,
+        level: SafetyAlertLevel = SafetyAlertLevel.WARNING,
+    ) -> None:
+        if self._mode != AIMode.AUTO and not self._link_paused:
             return
         self._fallback_reason = reason
         self._mode = AIMode.OFF
+        self._link_paused = False
+        self._link_paused_at = None
+        self._resume_blocked = True
         _logger.warning("AI AUTO falling back to manual: %s", reason)
         monitor = getattr(self._state, "_safety_monitor", None)
         if monitor is not None:
@@ -235,7 +322,7 @@ class RoastAIAgent:
         with contextlib.suppress(Exception):
             await self._state.event_bus.publish(
                 SafetyAlertEvent(
-                    level=SafetyAlertLevel.WARNING,
+                    level=level,
                     message=message,
                     condition="ai_auto_fallback",
                     cleared=False,
@@ -251,10 +338,13 @@ class RoastAIAgent:
         """Set the coffee ID for roast history lookup (called at charge)."""
         self._pending_coffee_id = coffee_id
 
-    async def start(self) -> None:
-        """Begin analysis loop."""
-        if self._task is not None and not self._task.done():
-            return
+    def _mid_roast(self) -> bool:
+        if getattr(self._state, "is_roast_active", False):
+            return True
+        session = getattr(self._state, "roast_session", None)
+        return bool(session is not None and getattr(session, "is_active", False))
+
+    def _reset_memory(self) -> None:
         self._marked_events.clear()
         self._last_ask_text = None
         self._last_ask_time = 0.0
@@ -268,11 +358,25 @@ class RoastAIAgent:
         self._transcript.clear()
         self._operator_messages.clear()
         self._last_prompt_snapshot = None
+        self._last_controls.clear()
+        self._development.reset()
+        self._guard_roast_id = None
+        self._auto_drop_sent = False
+
+    async def start(self) -> None:
+        """Begin analysis loop. A restart during a roast keeps the transcript and plan."""
+        if self._task is not None and not self._task.done():
+            return
+        if not self._mid_roast():
+            self._reset_memory()
         self._task = asyncio.create_task(self._loop())
         _logger.info("AI agent started (mode=%s)", self._mode.name)
 
     async def stop(self) -> None:
         """Cancel background task."""
+        self._resume_blocked = True
+        self._link_paused = False
+        self._link_paused_at = None
         if self._task is not None:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -295,8 +399,6 @@ class RoastAIAgent:
 
         heat = _clamp_control(suggestion.get("heat"))
         if heat is not None:
-            from maillard.core.heating import HeatingManager
-
             if heat > 0:
                 if state._heating_manager is None:
                     state._heating_manager = HeatingManager(driver)
@@ -467,6 +569,7 @@ class RoastAIAgent:
         if roast_id and roast_id != self._plan_roast_id:
             try:
                 from maillard.db.models import Roast, RoastPlan
+
                 roast = await Roast.get(roast_id)
                 plan = await RoastPlan.get(roast.plan_id) if roast and roast.plan_id else None
                 self._locked_plan = plan.model_dump() if plan and plan.locked_at else None
@@ -518,7 +621,10 @@ class RoastAIAgent:
         # Build the plan prompt
         sections = [format_calibration(self._batch_grams or 1200)]
         if self._locked_plan:
-            sections.append("Explain this locked plan; preserve its targets: " + str(self._locked_plan["phases"]))
+            sections.append(
+                "Explain this locked plan; preserve its targets: "
+                + str(self._locked_plan["phases"])
+            )
         if not history:
             return  # No coffee info — skip plan
 
@@ -588,13 +694,47 @@ class RoastAIAgent:
             )
             analysis = response.content[0].text if response.content else ""
             if analysis:
-                entry = self._record_transcript("ai", "analysis", f"Post-roast analysis:\n{analysis}")
+                entry = self._record_transcript(
+                    "ai", "analysis", f"Post-roast analysis:\n{analysis}"
+                )
                 event = AISuggestionEvent(reasoning=f"Post-roast analysis:\n{analysis}")
                 await self._state.event_bus.publish(event)
                 await self._publish_transcript_entry(entry)
                 _logger.info("Published post-roast comparison")
         except Exception:
             _logger.warning("Failed to generate post-roast comparison", exc_info=True)
+
+    def _prune_operator_messages(self) -> None:
+        if "fc_start" not in self._marked_events:
+            return
+        self._operator_messages = [
+            item
+            for item in self._operator_messages
+            if not message_contradicted(str(item.get("message", "")), self._marked_events)
+        ]
+
+    def _previous_decisions(self) -> str:
+        lines: list[str] = []
+        for entry in reversed(self._transcript):
+            if entry.get("role") != "ai":
+                continue
+            suggestion = entry.get("suggestion") or {}
+            bits = []
+            if suggestion.get("heat") is not None:
+                bits.append(f"heat {suggestion['heat']}%")
+            if suggestion.get("fan") is not None:
+                bits.append(f"fan {suggestion['fan']}%")
+            if suggestion.get("drum") is not None:
+                bits.append(f"drum {suggestion['drum']}%")
+            if not bits and not entry.get("content"):
+                continue
+            text = str(entry.get("content") or "").replace("\n", " ")[:160]
+            lines.append(f"- {', '.join(bits) or 'note'}: {text}")
+            if len(lines) == 4:
+                break
+        if not lines:
+            return ""
+        return "## Previous decisions\n" + "\n".join(reversed(lines))
 
     def _dedup_ask(self, decision: dict[str, Any]) -> None:
         """Suppress duplicate ask questions within 60s. Reset on phase change."""
@@ -719,14 +859,13 @@ class RoastAIAgent:
                     await asyncio.sleep(2.0)
                     continue
 
-                if self._mode == AIMode.AUTO and self._should_fallback_for_link():
-                    await self._fallback_from_auto(
-                        "Roaster disconnected or BT data stale"
-                    )
-                    await asyncio.sleep(ANALYSIS_INTERVAL)
-                    continue
-
                 self._sync_marked_events()
+                if self._mode == AIMode.AUTO:
+                    link = await self._handle_link()
+                    if link in {"paused", "fallback", "blocked"}:
+                        await asyncio.sleep(1.0 if link == "paused" else ANALYSIS_INTERVAL)
+                        continue
+
                 self._auto_detect_turning_point()
                 await self._resolve_roast_level()
                 await self._resolve_roast_history()
@@ -737,7 +876,33 @@ class RoastAIAgent:
                     continue
 
                 decision = await self._call_llm(messages)
+                failed = decision is None
                 if decision is None:
+                    decision = {
+                        "reasoning": "",
+                        "heat": None,
+                        "fan": None,
+                        "drum": None,
+                        "event": None,
+                        "ask": None,
+                        "drop": False,
+                    }
+
+                cmd = self._constrain_decision(decision)
+                auto_applied = False
+                if (
+                    self._mode == AIMode.AUTO
+                    and self.auto_control_enabled
+                    and not self._resume_blocked
+                    and not self._link_is_down()
+                    and (not failed or cmd.constrained or cmd.zero_heat)
+                ):
+                    auto_applied = await self._auto_apply(decision)
+                elif cmd.zero_heat and self._mode != AIMode.OFF and not self._resume_blocked:
+                    await self._auto_apply({"heat": 0})
+                await self._publish_guard(cmd)
+
+                if failed:
                     if self._mode == AIMode.AUTO:
                         self._auto_fail_count += 1
                         if self._auto_fail_count >= AUTO_FAIL_FALLBACK:
@@ -761,10 +926,6 @@ class RoastAIAgent:
                     self._state._safety_monitor.reset_watchdog()
 
                 self._last_suggestion = decision
-
-                auto_applied = False
-                if self._mode == AIMode.AUTO and self.auto_control_enabled:
-                    auto_applied = await self._auto_apply(decision)
 
                 heat = _clamp_control(decision.get("heat"))
                 fan = _clamp_control(decision.get("fan"))
@@ -816,14 +977,195 @@ class RoastAIAgent:
 
             await asyncio.sleep(ANALYSIS_INTERVAL)
 
-    def _should_fallback_for_link(self) -> bool:
+    def _link_is_down(self) -> bool:
         driver = self._state.driver
-        if driver is None or not driver.is_connected:
+        if driver is None or not getattr(driver, "is_connected", False):
             return True
         monitor = getattr(self._state, "_monitor", None)
-        if monitor is not None and getattr(monitor, "connection_lost", False):
-            return True
-        return False
+        return monitor is not None and bool(getattr(monitor, "connection_lost", False))
+
+    def _should_fallback_for_link(self) -> bool:
+        return self._link_is_down()
+
+    async def _handle_link(self) -> str:
+        """Pause auto across a link blip. Fresh data (alarm clear) resumes it."""
+        if self._resume_blocked or not getattr(self._state, "is_roast_active", False):
+            self._link_paused = False
+            self._link_paused_at = None
+            return "blocked"
+        if self._link_is_down():
+            now = time.monotonic()
+            if not self._link_paused:
+                self._link_paused = True
+                self._link_paused_at = now
+                _logger.warning("AI AUTO paused for roaster link blip")
+            elapsed = now - (self._link_paused_at or now)
+            after_fc = "fc_start" in self._marked_events
+            limit = LINK_BLIP_AFTER_FC_S if after_fc else LINK_BLIP_MANUAL_S
+            if elapsed > limit:
+                why = (
+                    f"Link down {elapsed:.0f}s after first crack"
+                    if after_fc
+                    else f"Link down {elapsed:.0f}s"
+                )
+                await self._fallback_from_auto(why, level=SafetyAlertLevel.CRITICAL)
+                return "fallback"
+            return "paused"
+        if self._link_paused:
+            await self._resend_last_controls()
+            self._link_paused = False
+            self._link_paused_at = None
+            await self._clear_fallback_alert()
+            _logger.info("AI AUTO resumed after fresh roaster data")
+            return "resumed"
+        return "ok"
+
+    async def _clear_fallback_alert(self) -> None:
+        with contextlib.suppress(Exception):
+            await self._state.event_bus.publish(
+                SafetyAlertEvent(
+                    level=SafetyAlertLevel.WARNING,
+                    message="AI auto control resumed",
+                    condition="ai_auto_fallback",
+                    cleared=True,
+                )
+            )
+
+    async def _resend_last_controls(self) -> None:
+        if self._resume_blocked or not getattr(self._state, "is_roast_active", False):
+            return
+        driver = self._state.driver
+        if driver is None or not getattr(driver, "is_connected", False):
+            return
+        ds = driver.state if isinstance(getattr(driver, "state", None), dict) else {}
+        heat = self._last_controls.get("heat", _clamp_control(ds.get("HP")))
+        fan = self._last_controls.get("fan", _clamp_control(ds.get("FC")))
+        drum = self._last_controls.get("drum", _clamp_control(ds.get("RC")))
+        if self._resume_blocked or not getattr(self._state, "is_roast_active", False):
+            return
+        if heat is not None and heat > 0:
+            manager = getattr(self._state, "_heating_manager", None)
+            if manager is None:
+                manager = HeatingManager(driver, event_bus=getattr(self._state, "event_bus", None))
+                self._state._heating_manager = manager
+            await manager.start(heat)
+        if self._resume_blocked or not getattr(self._state, "is_roast_active", False):
+            return
+        if heat is not None:
+            await driver.set_heat(heat)
+            self._last_controls["heat"] = heat
+        if fan is not None:
+            await driver.set_fan(fan)
+            self._last_controls["fan"] = fan
+        if drum is not None:
+            await driver.set_drum(drum)
+            self._last_controls["drum"] = drum
+
+    def _constrain_decision(self, decision: dict[str, Any]) -> DevCommand:
+        session = self._state.roast_session
+        driver = self._state.driver
+        if session is None or driver is None:
+            return DevCommand(0, 0, 0, False, False, False, False, False, "")
+        ds = driver.state if isinstance(getattr(driver, "state", None), dict) else {}
+        bt = ds.get("BT")
+        if not isinstance(bt, (int, float)):
+            return DevCommand(
+                _clamp_control(decision.get("heat")) or 0,
+                _clamp_control(decision.get("fan")) or 0,
+                _clamp_control(decision.get("drum")) or 0,
+                False,
+                False,
+                False,
+                False,
+                False,
+                "",
+            )
+        machine = session.machine
+        fc_marked = (
+            "fc_start" in self._marked_events or getattr(machine, "fc_start_time", None) is not None
+        )
+        batch = self._batch_grams or 0
+        cal = get_calibration(batch)
+        level = self._roast_level
+        (dtr_low, _dtr_high), (dev_min, dev_max) = development_band(level)
+        heat_now = _clamp_control(ds.get("HP"))
+        if heat_now is None:
+            heat_now = self._last_controls.get("heat", 0)
+        fan_now = _clamp_control(ds.get("FC"))
+        if fan_now is None:
+            fan_now = self._last_controls.get("fan", 0)
+        drum_now = _clamp_control(ds.get("RC"))
+        if drum_now is None:
+            drum_now = self._last_controls.get("drum", 0)
+        elapsed = session.elapsed_time
+        sample = DevSample(
+            bt=float(bt),
+            ror=session.latest_ror,
+            elapsed=float(elapsed) if elapsed is not None else None,
+            heat=heat_now,
+            fan=fan_now or 0,
+            drum=drum_now or 0,
+            ai_heat=_clamp_control(decision.get("heat")),
+            ai_fan=_clamp_control(decision.get("fan")),
+            ai_drum=_clamp_control(decision.get("drum")),
+            fc_predicted=predicted_fc_c(cal, batch),
+            fc_marked=fc_marked,
+            fc_elapsed=getattr(machine, "fc_start_time", None),
+            drop_target=drop_target_c(level, cal, batch),
+            dev_min_s=float(dev_min),
+            dev_max_s=float(dev_max),
+            dtr_low=dtr_low,
+            dtr_high=_dtr_high,
+        )
+        auto = bool(getattr(self._state.config, "auto_drop", False)) and self._mode == AIMode.AUTO
+        config = getattr(self._state, "config", None)
+        floor = getattr(config, "development_heat_floor", DEV_HEAT_FLOOR)
+        cmd = self._development.step(
+            sample,
+            auto_drop=auto and not self._auto_drop_sent,
+            heat_floor=int(floor),
+        )
+        decision["heat"] = cmd.heat
+        decision["fan"] = cmd.fan
+        decision["drum"] = cmd.drum
+        if cmd.drop_prompt or cmd.forced_prompt:
+            decision["drop"] = True
+        return cmd
+
+    async def _publish_guard(self, cmd: Any) -> None:
+        if self._resume_blocked:
+            return
+        session = self._state.roast_session
+        driver = self._state.driver
+        if not cmd.drop_prompt and not cmd.forced_prompt and not cmd.auto_drop:
+            return
+        bt = 0.0
+        elapsed = 0.0
+        if driver is not None and isinstance(getattr(driver, "state", None), dict):
+            raw = driver.state.get("BT")
+            if isinstance(raw, (int, float)):
+                bt = float(raw)
+        if session is not None and session.elapsed_time is not None:
+            elapsed = float(session.elapsed_time)
+        target = drop_target_c(self._roast_level, batch_g=self._batch_grams)
+        if cmd.drop_prompt or cmd.forced_prompt:
+            reason = "second-crack guard" if cmd.forced_prompt else "drop target reached"
+            with contextlib.suppress(Exception):
+                await self._state.event_bus.publish(
+                    DropSuggested(
+                        temp_bt=bt,
+                        elapsed_seconds=elapsed,
+                        target_temp=target,
+                        reason=reason,
+                    )
+                )
+        if cmd.auto_drop and not self._auto_drop_sent:
+            self._auto_drop_sent = True
+            callback = getattr(self._state, "auto_drop_callback", None)
+            if callback is not None:
+                self.block_auto_resume()
+                with contextlib.suppress(Exception):
+                    await callback()
 
     async def _auto_apply(self, decision: dict[str, Any]) -> bool:
         """Auto-apply heat/fan/drum (not events or drop). Returns True if anything applied."""
@@ -836,8 +1178,6 @@ class RoastAIAgent:
 
         heat = _clamp_control(decision.get("heat"))
         if heat is not None:
-            from maillard.core.heating import HeatingManager
-
             if heat > 0:
                 if state._heating_manager is None:
                     state._heating_manager = HeatingManager(driver)
@@ -859,6 +1199,13 @@ class RoastAIAgent:
             await driver.set_drum(drum)
             applied = True
 
+        if applied:
+            if heat is not None:
+                self._last_controls["heat"] = heat
+            if fan is not None:
+                self._last_controls["fan"] = fan
+            if drum is not None:
+                self._last_controls["drum"] = drum
         return applied
 
     def _build_messages(self) -> list[dict[str, str]] | None:
@@ -889,19 +1236,57 @@ class RoastAIAgent:
 
         # Build user message with current state and curve
         sections = [format_calibration(self._batch_grams or 1200)]
+        batch = self._batch_grams or 0
+        cal = get_calibration(batch)
+        level = self._roast_level
+        target = drop_target_c(level, cal, batch)
+        (dtr_low, dtr_high), (dev_min, dev_max) = development_band(level)
+        fc_predicted = predicted_fc_c(cal, batch)
+        config = getattr(self._state, "config", None)
+        floor = int(getattr(config, "development_heat_floor", DEV_HEAT_FLOOR))
+        sections.append(
+            f"## Drop target\n"
+            f"Drop target is {target:.0f}C for {level or 'Medium'} "
+            f"(DTR {dtr_low:.0f}-{dtr_high:.0f}%, development {dev_min}-{dev_max}s). "
+            f"Predicted FC is {fc_predicted:.0f}C. "
+            "From 5C before that FC, step heat down so RoR declines. "
+            "After FC, heat may only stay the same or decrease. "
+            f"Between FC and drop, do not go below {floor}% heat. "
+            f"Step heat down only while RoR is above {ROR_STEP_ABOVE:.0f}C/min; "
+            f"hold heat in the {ROR_HOLD_BELOW:.0f}-{ROR_STEP_ABOVE:.0f}C/min band "
+            "and if RoR falls below that. "
+            "The second-crack guard, drop, and emergency stop still set heat to 0."
+        )
         plan = self._locked_plan
         if plan:
             from maillard.roasting.plan import planned_bt_at
-            sections.append("## Locked RoastPlan targets\n" + "\n".join(
-                f"{p['name']}: {p.get('target_time_seconds')}s BT={p.get('target_temp')}C "
-                f"heat={p.get('heat_percent')} fan={p.get('fan_percent')} drum={p.get('drum_percent')}"
-                for p in plan.get("phases", [])))
-            target = planned_bt_at(plan.get("phases", []), elapsed)
-            if target is not None:
-                sections.append(f"Plan delta: BT {bt-target:+.1f}C relative to target {target:.1f}C.")
-            sections.append("Plan delta is a guide, especially unreliable before TP; do not chase it with heat. "
-                            "Trust actual operator events. Discuss deviations and confidence before suggesting changes.")
+
+            sections.append(
+                "## Locked RoastPlan targets\n"
+                + "\n".join(
+                    f"{p['name']}: {p.get('target_time_seconds')}s BT={p.get('target_temp')}C "
+                    f"heat={p.get('heat_percent')} fan={p.get('fan_percent')} drum={p.get('drum_percent')}"
+                    for p in plan.get("phases", [])
+                )
+            )
+            plan_bt = planned_bt_at(plan.get("phases", []), elapsed)
+            if plan_bt is not None:
+                sections.append(
+                    f"Plan delta: BT {bt - plan_bt:+.1f}C relative to target {plan_bt:.1f}C."
+                )
+            sections.append(
+                "Plan delta is a guide, especially unreliable before TP; do not chase it with heat. "
+                "Trust actual operator events. Discuss deviations and confidence before suggesting changes."
+            )
             sections.extend(plan.get("warnings", []))
+            plan_drop = plan.get("target_drop_temp")
+            if plan_drop is None:
+                for phase in plan.get("phases", []):
+                    if phase.get("name") == "drop" and phase.get("target_temp") is not None:
+                        plan_drop = phase.get("target_temp")
+            conflict = plan_drop_conflict(plan_drop, level, cal, batch)
+            if conflict:
+                sections.append(conflict + f" Use drop target {target:.0f}C.")
 
         # Roast info — always include roast level (default to Medium)
         info_parts = []
@@ -953,11 +1338,17 @@ class RoastAIAgent:
 
         c = get_calibration(self._batch_grams or 1200)
         if elapsed > c["dry_end_time_s"] + 60 and not has_dry_end:
-            pace_warnings.append("Dry end later than calibration; ask operator to assess color and pace.")
+            pace_warnings.append(
+                "Dry end later than calibration; ask operator to assess color and pace."
+            )
         if elapsed > c["fc_time_s"] + 60 and not has_fc:
-            pace_warnings.append("FC later than calibration; assess trend and confidence with operator.")
+            pace_warnings.append(
+                "FC later than calibration; assess trend and confidence with operator."
+            )
         if elapsed > c["total_time_s"] + 90:
-            pace_warnings.append("Beyond typical total time; discuss development and drop with operator.")
+            pace_warnings.append(
+                "Beyond typical total time; discuss development and drop with operator."
+            )
 
         if pace_warnings:
             sections.append("## Pace\n" + "\n".join(pace_warnings))
@@ -995,6 +1386,7 @@ class RoastAIAgent:
                 f"\nAlready marked (do NOT suggest again): {', '.join(sorted(self._marked_events))}"
             )
 
+        self._prune_operator_messages()
         if self._operator_messages:
             lines = ["\n## Operator Observations and Questions"]
             for item in self._operator_messages[-8:]:
@@ -1003,6 +1395,10 @@ class RoastAIAgent:
                 "Use these operator observations as sensory context. If the operator marked an event, trust the event data above."
             )
             sections.append("\n".join(lines))
+
+        prior = self._previous_decisions()
+        if prior:
+            sections.append(prior)
 
         user_content = "\n".join(sections)
         self._last_prompt_snapshot = {
@@ -1018,7 +1414,9 @@ class RoastAIAgent:
                 "operator_message_count": len(self._operator_messages),
                 "transcript_count": len(self._transcript),
                 "marked_events": sorted(self._marked_events),
-                "history_roast_count": len(self._roast_history.past_roasts) if self._roast_history else 0,
+                "history_roast_count": len(self._roast_history.past_roasts)
+                if self._roast_history
+                else 0,
                 "curve_sample_count": len(samples),
             },
         }
@@ -1046,8 +1444,6 @@ class RoastAIAgent:
     @staticmethod
     def _parse_json(text: str) -> dict[str, Any] | None:
         """Parse JSON from the model response, handling code fences."""
-        import re
-
         text = text.strip()
 
         # Direct parse
@@ -1078,7 +1474,7 @@ class RoastAIAgent:
     def get_status(self) -> dict[str, Any]:
         """Return current AI agent status for the API."""
         return {
-            "mode": self._mode.name.lower(),
+            "mode": self.status_mode,
             "auto_control_enabled": self.auto_control_enabled,
             "model": self._model,
             "live_model": self._model,

@@ -144,9 +144,7 @@ async def test_charge_with_profile_stores_locked_plan(sim_app) -> None:
     assert any("extrapolated" in w for w in preview["plan"]["warnings"])
 
     data = (
-        await client.post(
-            "/api/charge", json={"profile_id": profile.id, "batch_size_grams": 1200}
-        )
+        await client.post("/api/charge", json={"profile_id": profile.id, "batch_size_grams": 1200})
     ).json()
     assert data["status"] == "charged"
     plan = data["plan"]
@@ -177,9 +175,7 @@ async def test_generate_profile_defaults_to_1200g(sim_app) -> None:
 
     coffee = Coffee(name="Ethiopia Uraga", origin="Ethiopia", processing="Washed")
     await coffee.insert()
-    data = (
-        await client.post("/api/ai/generate-profile", json={"coffee_id": coffee.id})
-    ).json()
+    data = (await client.post("/api/ai/generate-profile", json={"coffee_id": coffee.id})).json()
     assert data["status"] == "ok", data
     p = data["profile"]
     assert p["batch_size_grams"] == 1200
@@ -203,16 +199,22 @@ async def test_charge_assigns_code_and_weights_flow(sim_app) -> None:
     assert detail["green_weight_grams"] == 1200
     assert detail["control_mode"] == "manual"
 
-    bad = (await client.post(f"/api/roasts/{rid}/weights", json={"roasted_weight_grams": 1300})).json()
+    bad = (
+        await client.post(f"/api/roasts/{rid}/weights", json={"roasted_weight_grams": 1300})
+    ).json()
     assert bad["status"] == "error"
 
-    ok = (await client.post(f"/api/roasts/{rid}/weights", json={"roasted_weight_grams": 1020})).json()
+    ok = (
+        await client.post(f"/api/roasts/{rid}/weights", json={"roasted_weight_grams": 1020})
+    ).json()
     assert ok == {
         "status": "ok",
         "green_weight_grams": 1200,
         "roasted_weight_grams": 1020,
         "weight_loss": 15.0,
-        "bags_packed": 3, "bag_size_grams": 340, "drop_id": None,
+        "bags_packed": 3,
+        "bag_size_grams": 340,
+        "drop_id": None,
         "inventory": {"deducted": False, "warning": "Roast unfinished or coffee unknown"},
     }
 
@@ -231,17 +233,63 @@ async def test_ensure_code_backfills_old_roast(sim_app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_charge_starts_fc_drop_suggestions(sim_app):
+    from maillard.roasting.development import drop_target_c, predicted_fc_c
+    from maillard.roasting.execution import ControlMode
+
+    client, state, _app, _sim = sim_app
+    data = (await client.post("/api/charge", json={"batch_size_grams": 450})).json()
+    assert data["status"] == "charged", data
+    engine = state._execution_engine
+    assert engine is not None
+    assert engine.mode == ControlMode.MANUAL
+    assert engine._drop_target_temp == drop_target_c(None, batch_g=450)
+    assert engine._fc_threshold == predicted_fc_c(batch_g=450)
+
+
+@pytest.mark.asyncio
+async def test_drop_sends_event_before_cooling(sim_app):
+    from maillard.driver.base import RoastEvent
+
+    client, state, _app, sim = sim_app
+    charge = (await client.post("/api/charge", json={"batch_size_grams": 450})).json()
+    assert charge["status"] == "charged", charge
+    order: list[str] = []
+    trigger = sim.trigger_event
+
+    async def wrap_event(event):
+        if event == RoastEvent.DROP:
+            order.append("drop-event")
+        return await trigger(event)
+
+    fan = state.cooling_fan()
+    enable = fan.set_enabled
+
+    async def wrap_enable(*args, **kwargs):
+        order.append("cs")
+        return await enable(*args, **kwargs)
+
+    sim.trigger_event = wrap_event
+    fan.set_enabled = wrap_enable
+    dropped = (await client.post("/api/drop")).json()
+    assert dropped["status"] == "dropped", dropped
+    assert order.index("drop-event") < order.index("cs")
+    assert sim.state["EV"] == 8
+    assert dropped["cooling"]["enabled"] is True
+
+
+@pytest.mark.asyncio
 async def test_drop_enqueues_site_sync(sim_app):
     from maillard.db.models import SyncOutbox
     from maillard.web.routes import _sync_tasks
 
     client, _state, _app, _sim = sim_app
-    charge = (await client.post('/api/charge', json={'batch_size_grams': 1200})).json()
-    assert charge['status'] == 'charged'
-    assert (await client.post('/api/drop')).json()['status'] == 'dropped'
+    charge = (await client.post("/api/charge", json={"batch_size_grams": 1200})).json()
+    assert charge["status"] == "charged"
+    assert (await client.post("/api/drop")).json()["status"] == "dropped"
     await asyncio.gather(*_sync_tasks)
-    item = await SyncOutbox.find_one(SyncOutbox.roast_id == charge['roast_id'])
-    assert item is not None and item.status == 'pending'
+    item = await SyncOutbox.find_one(SyncOutbox.roast_id == charge["roast_id"])
+    assert item is not None and item.status == "pending"
 
 
 @pytest.mark.asyncio
@@ -250,15 +298,15 @@ async def test_emergency_stop_enqueues_aborted_roast(sim_app):
     from maillard.web.routes import _sync_tasks
 
     client, state, _app, sim = sim_app
-    charge = (await client.post('/api/charge', json={})).json()
-    result = (await client.post('/api/emergency-stop')).json()
-    assert result['status'] == 'emergency_stopped'
-    assert not state.is_roast_active and sim.state['HP'] == 0
+    charge = (await client.post("/api/charge", json={})).json()
+    result = (await client.post("/api/emergency-stop")).json()
+    assert result["status"] == "emergency_stopped"
+    assert not state.is_roast_active and sim.state["HP"] == 0
     await asyncio.gather(*_sync_tasks)
-    roast = await Roast.get(charge['roast_id'])
+    roast = await Roast.get(charge["roast_id"])
     item = await SyncOutbox.find_one(SyncOutbox.roast_id == roast.id)
-    assert roast.status == 'aborted'
-    assert item.status == 'pending'
+    assert roast.status == "aborted"
+    assert item.status == "pending"
 
 
 @pytest.mark.asyncio
@@ -270,8 +318,13 @@ async def test_drop_persists_all_session_phases(sim_app):
     roast = Roast(batch_size_grams=450)
     await roast.insert()
     session = RoastSession.start(state.event_bus, charge_temp=200, roast_id=roast.id)
-    phases = [("turning_point", 40, 85), ("dry_end", 240, 150),
-              ("fc_start", 400, 182), ("fc_end", 450, 190), ("sc_start", 480, 198)]
+    phases = [
+        ("turning_point", 40, 85),
+        ("dry_end", 240, 150),
+        ("fc_start", 400, 182),
+        ("fc_end", 450, 190),
+        ("sc_start", 480, 198),
+    ]
     for phase, seconds, temp in phases:
         session.mark_event(phase, temp=temp, time_seconds=seconds)
     state.roast_session = session
@@ -305,11 +358,19 @@ async def test_generated_warnings_survive_profile_save(sim_app, monkeypatch):
     assert response["status"] == "ok"
     payload = response["profile"]
     assert generated.warnings[0] in payload["warnings"]
-    saved = (await client.post("/api/profiles", json={
-        "name": payload["name"], "phases": payload["phases"],
-        "charge_temp": payload["charge_temp"], "target_dtr": payload["target_dtr"],
-        "batch_size_grams": 450, "warnings": payload["warnings"],
-    })).json()
+    saved = (
+        await client.post(
+            "/api/profiles",
+            json={
+                "name": payload["name"],
+                "phases": payload["phases"],
+                "charge_temp": payload["charge_temp"],
+                "target_dtr": payload["target_dtr"],
+                "batch_size_grams": 450,
+                "warnings": payload["warnings"],
+            },
+        )
+    ).json()
     stored = await Profile.get(saved["id"])
     assert generated.warnings[0] in stored.warnings
     fetched = (await client.get(f"/api/profiles/{stored.id}")).json()
@@ -322,18 +383,18 @@ async def test_generated_warnings_survive_profile_save(sim_app, monkeypatch):
 async def test_preheat_is_monitored_and_charge_replaces_monitor(sim_app):
     client, state, _app, _sim = sim_app
     state.config.preheat_timeout_seconds = 30
-    result = (await client.post('/api/preheat', json={'target_temp': 200})).json()
-    assert result['status'] == 'preheating'
+    result = (await client.post("/api/preheat", json={"target_temp": 200})).json()
+    assert result["status"] == "preheating"
     preheat_monitor = state._monitor
     assert preheat_monitor.is_running
     assert state._heating_manager._preheat_deadline is not None
-    charge = (await client.post('/api/charge', json={})).json()
-    assert charge['status'] == 'charged'
+    charge = (await client.post("/api/charge", json={})).json()
+    assert charge["status"] == "charged"
     assert not preheat_monitor.is_running
     assert preheat_monitor._freshness_task is None
     assert state._monitor.is_running
     assert state._heating_manager._preheat_deadline is None
-    await client.post('/api/drop')
+    await client.post("/api/drop")
 
 
 @pytest.mark.asyncio
@@ -344,7 +405,9 @@ async def test_configured_preheat_timeout_through_web(sim_app):
     state.config.preheat_timeout_seconds = 0.01
     events = []
     state.event_bus.on(SafetyAlertEvent, events.append)
-    assert (await client.post('/api/preheat', json={'target_temp': 200})).json()['status'] == 'preheating'
+    assert (await client.post("/api/preheat", json={"target_temp": 200})).json()[
+        "status"
+    ] == "preheating"
     # Accelerate the background check without waiting its default 1s interval.
     state._heating_manager._send_interval = 0.001
     for _ in range(150):
@@ -352,29 +415,29 @@ async def test_configured_preheat_timeout_through_web(sim_app):
             break
         await asyncio.sleep(0.01)
     assert not state._heating_manager.is_running
-    assert sim.state['HP'] == 0 and sim.state['HS'] == 0
-    assert any(e.condition == 'preheat_timeout' and not e.cleared for e in events)
+    assert sim.state["HP"] == 0 and sim.state["HS"] == 0
+    assert any(e.condition == "preheat_timeout" and not e.cleared for e in events)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('endpoint', ['drop', 'emergency-stop'])
+@pytest.mark.parametrize("endpoint", ["drop", "emergency-stop"])
 async def test_connection_events_persisted(sim_app, endpoint):
     from maillard.db.converters import roast_to_response_with_curve
     from maillard.db.models import Roast
 
     client, state, _app, sim = sim_app
-    charged = (await client.post('/api/charge', json={})).json()
-    assert charged['status'] == 'charged'
+    charged = (await client.post("/api/charge", json={})).json()
+    assert charged["status"] == "charged"
     await sim.disconnect()
     await state._monitor._poll_once()
-    await sim.connect('simulator')
+    await sim.connect("simulator")
     await state._monitor._poll_once()
-    result = (await client.post(f'/api/{endpoint}')).json()
-    assert result['status'] in {'dropped', 'emergency_stopped'}
-    roast = await Roast.get(charged['roast_id'])
+    result = (await client.post(f"/api/{endpoint}")).json()
+    assert result["status"] in {"dropped", "emergency_stopped"}
+    roast = await Roast.get(charged["roast_id"])
     assert roast is not None
-    assert [e['type'] for e in roast.connection_events] == ['closed', 'connected']
-    assert all(e['elapsed'] is not None for e in roast.connection_events)
-    assert roast.curve_data['gaps'][0]['reason'] == 'disconnected'
-    assert roast.curve_data['connection_summary']['disconnects'] == 1
+    assert [e["type"] for e in roast.connection_events] == ["closed", "connected"]
+    assert all(e["elapsed"] is not None for e in roast.connection_events)
+    assert roast.curve_data["gaps"][0]["reason"] == "disconnected"
+    assert roast.curve_data["connection_summary"]["disconnects"] == 1
     assert roast_to_response_with_curve(roast).connection_events == roast.connection_events

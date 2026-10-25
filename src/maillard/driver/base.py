@@ -9,23 +9,22 @@ from typing import Final, Protocol, TypedDict
 
 
 class RoastEvent(IntEnum):
-    """Roast event codes for Kaleido M10.
+    """Roast event codes sent with the Kaleido EV command.
 
-    These event codes are sent via the EV command to mark roast milestones.
-
-    Note: DROP uses EV 9, not EV 8. Event 8 is detected via the sid
-    status flag bits, not sent as an EV command.
+    Community protocol lists EV 8 as Drop and EV 9 as Cool End. The wire
+    code for DROP is ``kaleido_drop_event_code`` (default 8) so a machine
+    that still expects 9 can be overridden without a code change.
     """
 
-    CHARGE = 1  # Start roast (beans dropped into drum)
-    TURNING_POINT = 2  # Lowest BT after charge
-    DRY_END = 3  # End of drying phase (~150°C)
-    FC_START = 4  # First crack begins (~196°C)
-    FC_END = 5  # First crack ends
-    SC_START = 6  # Second crack begins (~224°C)
-    SC_END = 7  # Second crack ends
-    # Note: Event 8 is DROP detection via sid flag bits
-    DROP = 9  # End roast - Kaleido uses EV 9 for DROP command
+    CHARGE = 1
+    TURNING_POINT = 2
+    DRY_END = 3
+    FC_START = 4
+    FC_END = 5
+    SC_START = 6
+    SC_END = 7
+    DROP = 8
+    COOL_END = 9
 
 
 class KaleidoState(TypedDict, total=False):

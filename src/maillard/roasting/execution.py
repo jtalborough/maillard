@@ -106,6 +106,7 @@ class RoastExecutionEngine:
         dry_end_threshold: float = 150.0,
         fc_threshold: float = 195.0,
         turning_point_confirmation_samples: int = 3,
+        drop_target_temp: float | None = None,
     ) -> None:
         """Initialize the execution engine.
 
@@ -127,6 +128,7 @@ class RoastExecutionEngine:
         self._dry_end_threshold = dry_end_threshold
         self._fc_threshold = fc_threshold
         self._tp_confirmation_samples = turning_point_confirmation_samples
+        self._drop_target_temp = drop_target_temp
 
         # Internal state
         self._unsubscribe: UnsubscribeFunc | None = None
@@ -368,30 +370,37 @@ class RoastExecutionEngine:
                     elapsed,
                 )
 
-        # Drop suggestion (profile target reached)
-        if "drop" not in self._suggested_events and self._phases:
-            last_phase = self._phases[-1]
-            target_time = last_phase.target_time_seconds
-            target_temp = last_phase.target_temp
-
-            # Suggest drop if we've reached target time or temperature
-            if elapsed >= target_time or bt >= target_temp:
+        # Drop suggestion (calibrated level target, else the profile waypoint)
+        if "drop" not in self._suggested_events:
+            target_temp = self._drop_target_temp
+            target_time = None
+            if self._phases:
+                last_phase = self._phases[-1]
+                target_time = last_phase.target_time_seconds
+                if target_temp is None:
+                    target_temp = last_phase.target_temp
+            if target_temp is not None and (
+                bt >= target_temp or (target_time is not None and elapsed >= target_time)
+            ):
                 await self._event_bus.publish(
                     DropSuggested(
                         temp_bt=bt,
                         elapsed_seconds=elapsed,
                         target_temp=target_temp,
-                        target_time=float(target_time),
-                        reason="profile target reached",
+                        target_time=float(target_time) if target_time is not None else None,
+                        reason=(
+                            "drop target reached"
+                            if self._drop_target_temp is not None
+                            else "profile target reached"
+                        ),
                     )
                 )
                 self._suggested_events.add("drop")
                 _logger.info(
-                    "Drop suggested at %.1f°C (%.1fs) - target: %.1f°C / %ds",
+                    "Drop suggested at %.1f°C (%.1fs) - target: %.1f°C",
                     bt,
                     elapsed,
                     target_temp,
-                    target_time,
                 )
 
     def _detect_turning_point(self, bt: float, elapsed: float) -> bool:

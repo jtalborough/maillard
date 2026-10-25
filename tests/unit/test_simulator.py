@@ -201,7 +201,9 @@ class TestThermalModel:
 
         # With high cooling rate and 0.5s wait, should cool noticeably
         # Use <= to handle rounding (199.9 should pass when initial is 200.0)
-        assert final_bt <= initial_bt - 0.05, f"BT should decrease with 100% fan and no heat, got {final_bt}"
+        assert final_bt <= initial_bt - 0.05, (
+            f"BT should decrease with 100% fan and no heat, got {final_bt}"
+        )
 
         await driver.disconnect()
 
@@ -254,7 +256,9 @@ class TestThermalModel:
 
         state = await driver.read_state()
         # ET should remain above BT during active heating
-        assert state["ET"] > state["BT"], f"ET ({state['ET']}) should be above BT ({state['BT']}) during roasting"
+        assert state["ET"] > state["BT"], (
+            f"ET ({state['ET']}) should be above BT ({state['BT']}) during roasting"
+        )
 
         await driver.disconnect()
 
@@ -659,15 +663,21 @@ class TestRoastEvents:
 
     @pytest.mark.asyncio
     async def test_trigger_drop_event(self) -> None:
-        """Test triggering DROP event (EV 9)."""
+        """DROP sends EV 8 by default."""
         driver = SimulatorDriver()
         await driver.connect("localhost", 80)
 
         await driver.trigger_event(RoastEvent.DROP)
         state = await driver.read_state()
-        assert state["EV"] == 9  # DROP is EV 9
+        assert state["EV"] == 8
 
         await driver.disconnect()
+
+        legacy = SimulatorDriver(drop_event_code=9)
+        await legacy.connect("localhost", 80)
+        await legacy.trigger_event(RoastEvent.DROP)
+        assert (await legacy.read_state())["EV"] == 9
+        await legacy.disconnect()
 
     @pytest.mark.asyncio
     async def test_all_event_types(self) -> None:

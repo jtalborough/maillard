@@ -270,12 +270,21 @@ const Roast = {
     if (data.cooling) {
       this.syncCoolingUi(data.cooling);
     }
+    if (data.auto_drop != null && document.activeElement?.id !== 'auto-drop') {
+      const box = document.getElementById('auto-drop');
+      if (box) box.checked = data.auto_drop === true;
+    }
     if (data.ai && data.ai.mode) {
       const prev = App.aiMode;
-      App.aiMode = data.ai.mode;
+      const wasPaused = this._aiPaused === true;
+      const paused = data.ai.mode === 'auto-paused';
+      this._aiPaused = paused;
+      App.aiMode = paused ? 'auto' : data.ai.mode;
       App.aiAutoEnabled = data.ai.auto_control_enabled === true;
       this.updateAIModeButtons();
-      if (prev === 'auto' && App.aiMode !== 'auto') {
+      if (paused && !wasPaused) App.logEvent('AI auto paused — link down', 'text-amber-400');
+      if (!paused && wasPaused && App.aiMode === 'auto') App.logEvent('AI auto resumed', 'text-green-400');
+      if (prev === 'auto' && !paused && App.aiMode !== 'auto') {
         App.logEvent('AI auto stopped — manual control', 'text-amber-400');
         document.getElementById('ai-panel')?.classList.toggle('ai-active', App.aiMode !== 'off');
       }
@@ -339,6 +348,7 @@ const Roast = {
         dd.classList.add('hidden');
       }
     }
+    if (!nowRoasting) this.dismissDropPrompt(true);
     const isPreheating = roastState === 'preheating' || roastState === 'ready_to_charge';
     if (roast.elapsed_seconds != null) document.getElementById('val-time').textContent = App.formatTime(roast.elapsed_seconds);
     if (roast.phase) document.getElementById('val-phase').textContent = roast.phase;
@@ -481,9 +491,7 @@ const Roast = {
         break;
 
       case 'DropSuggested':
-        App.logEvent(`Drop suggested @ ${msg.temp_bt?.toFixed(1)}°C — ${msg.reason}`, 'text-red-400');
-        App.showAlert('Profile target reached — confirm drop!', 'critical');
-        App.speak('Drop now! Target reached.', true);
+        this.showDropPrompt(msg);
         break;
 
       case 'AISuggestionEvent':
@@ -927,15 +935,65 @@ const Roast = {
       const role = entry.role || 'system';
       const roleColor = role === 'operator' ? 'text-amber-300' : role === 'ai' ? 'text-violet-300' : 'text-slate-400';
       div.className = 'rounded border border-slate-800 bg-slate-950/60 p-2';
+      const suggestion = entry.suggestion || {};
+      const controls = [];
+      if (suggestion.heat != null) controls.push(`Heat ${suggestion.heat}%`);
+      if (suggestion.fan != null) controls.push(`Fan ${suggestion.fan}%`);
+      if (suggestion.drum != null) controls.push(`Drum ${suggestion.drum}%`);
+      const duplicateReason = role === 'ai' && (entry.kind === 'suggestion' || entry.kind === 'drop' || entry.kind === 'question');
+      const body = duplicateReason
+        ? controls.join(' · ')
+        : (entry.content || '');
       div.innerHTML = `
         <div class="flex items-center justify-between gap-2 mb-1">
           <span class="${roleColor} uppercase tracking-wide text-[10px]">${this._esc(role)} · ${this._esc(entry.kind || 'message')}</span>
           <span class="text-[10px] text-slate-600">${this._esc(this._formatTranscriptTime(entry.timestamp))}</span>
         </div>
-        <div class="text-slate-300 whitespace-pre-wrap">${this._esc(entry.content || '')}</div>`;
+        <div class="text-slate-300 whitespace-pre-wrap">${this._esc(body)}</div>`;
       container.appendChild(div);
     });
     container.scrollTop = container.scrollHeight;
+  },
+
+  showDropPrompt(msg) {
+    const el = document.getElementById('drop-prompt');
+    if (!el) return;
+    const forced = /guard|second/i.test(msg.reason || '');
+    const title = document.getElementById('drop-prompt-title');
+    const detail = document.getElementById('drop-prompt-detail');
+    const dismiss = document.getElementById('drop-prompt-dismiss');
+    if (title) title.textContent = forced ? 'DROP NOW' : 'DROP';
+    const temp = msg.temp_bt != null ? `${Number(msg.temp_bt).toFixed(1)}°C` : '';
+    const target = msg.target_temp != null ? `target ${Number(msg.target_temp).toFixed(0)}°C` : '';
+    if (detail) {
+      detail.textContent = forced
+        ? `Second-crack guard. ${temp} ${target}`.trim()
+        : `Target reached. ${temp} ${target}`.trim();
+    }
+    if (dismiss) dismiss.classList.toggle('hidden', forced);
+    const already = el.dataset.open === '1' && el.dataset.forced === (forced ? '1' : '0');
+    el.dataset.open = '1';
+    el.dataset.forced = forced ? '1' : '0';
+    el.classList.remove('hidden');
+    if (!already) {
+      App.logEvent(forced ? 'Second-crack guard — drop now' : 'Drop target reached', 'text-red-400');
+      App.speak(forced ? 'Drop now. Second crack guard.' : 'Drop now. Target reached.', true);
+    }
+  },
+
+  dismissDropPrompt(silent = false) {
+    const el = document.getElementById('drop-prompt');
+    if (!el) return;
+    if (!silent && el.dataset.forced === '1') return;
+    el.classList.add('hidden');
+    el.dataset.open = '0';
+  },
+
+  async setAutoDrop(enabled) {
+    const data = await apiPost('/api/auto-drop', {enabled: !!enabled});
+    if (!data || data.status !== 'ok') {
+      App.logEvent('Could not change auto-drop', 'text-amber-400');
+    }
   },
 
   handleAISuggestion(msg) {
@@ -955,44 +1013,28 @@ const Roast = {
     const container = document.getElementById('ai-suggestions');
     container.innerHTML = '';
 
-    if (msg.suggested_heat != null) {
+    const applied = [];
+    const pending = [];
+    if (msg.suggested_heat != null) (msg.auto_applied ? applied : pending).push(['heat', msg.suggested_heat]);
+    if (msg.suggested_fan != null) (msg.auto_applied ? applied : pending).push(['fan', msg.suggested_fan]);
+    if (msg.suggested_drum != null) (msg.auto_applied ? applied : pending).push(['drum', msg.suggested_drum]);
+    if (applied.length) {
+      const line = document.createElement('div');
+      line.id = 'ai-applied-line';
+      line.className = 'text-xs ai-applied';
+      const label = {heat: 'Heat', fan: 'Fan', drum: 'Drum'};
+      line.textContent = 'Applied: ' + applied.map(([name, value]) => `${label[name]} ${value}%`).join(' · ');
+      container.appendChild(line);
+    }
+    pending.forEach(([name, value]) => {
       const div = document.createElement('div');
       div.className = 'flex items-center justify-between';
-      if (msg.auto_applied) {
-        div.innerHTML = `<span class="text-xs ai-applied">Applied: Heat &rarr; ${msg.suggested_heat}%</span>`;
-      } else {
-        div.innerHTML = `<span class="text-xs text-slate-300">Heat &rarr; ${msg.suggested_heat}%</span>
-          <button onclick="Roast.applyAISuggestion({heat:${msg.suggested_heat}})"
-                  class="text-xs bg-violet-700 hover:bg-violet-600 text-white px-2 py-0.5 rounded">Apply</button>`;
-      }
+      const label = name[0].toUpperCase() + name.slice(1);
+      div.innerHTML = `<span class="text-xs text-slate-300">${label} → ${value}%</span>
+        <button onclick="Roast.applyAISuggestion({${name}:${value}})"
+                class="text-xs bg-violet-700 hover:bg-violet-600 text-white px-2 py-0.5 rounded">Apply</button>`;
       container.appendChild(div);
-    }
-
-    if (msg.suggested_fan != null) {
-      const div = document.createElement('div');
-      div.className = 'flex items-center justify-between';
-      if (msg.auto_applied) {
-        div.innerHTML = `<span class="text-xs ai-applied">Applied: Fan &rarr; ${msg.suggested_fan}%</span>`;
-      } else {
-        div.innerHTML = `<span class="text-xs text-slate-300">Fan &rarr; ${msg.suggested_fan}%</span>
-          <button onclick="Roast.applyAISuggestion({fan:${msg.suggested_fan}})"
-                  class="text-xs bg-violet-700 hover:bg-violet-600 text-white px-2 py-0.5 rounded">Apply</button>`;
-      }
-      container.appendChild(div);
-    }
-
-    if (msg.suggested_drum != null) {
-      const div = document.createElement('div');
-      div.className = 'flex items-center justify-between';
-      if (msg.auto_applied) {
-        div.innerHTML = `<span class="text-xs ai-applied">Applied: Drum &rarr; ${msg.suggested_drum}%</span>`;
-      } else {
-        div.innerHTML = `<span class="text-xs text-slate-300">Drum &rarr; ${msg.suggested_drum}%</span>
-          <button onclick="Roast.applyAISuggestion({drum:${msg.suggested_drum}})"
-                  class="text-xs bg-violet-700 hover:bg-violet-600 text-white px-2 py-0.5 rounded">Apply</button>`;
-      }
-      container.appendChild(div);
-    }
+    });
 
     if (msg.suggested_event) {
       const label = msg.suggested_event.replace(/_/g, ' ');
@@ -1011,7 +1053,6 @@ const Roast = {
         <button onclick="Roast.doDrop()"
                 class="text-xs bg-red-700 hover:bg-red-600 text-white px-2 py-0.5 rounded">Drop</button>`;
       container.appendChild(div);
-      App.speak('Drop recommended! End the roast now.', true);
     }
 
     if (!msg.auto_applied && (msg.suggested_heat != null || msg.suggested_fan != null || msg.suggested_drum != null || msg.suggested_event || msg.drop)) {
@@ -1053,7 +1094,13 @@ const Roast = {
       askEl.classList.add('hidden');
     }
 
-    App.logEvent(`AI: ${msg.reasoning || ''}`, 'text-violet-400');
+    if (msg.auto_applied) {
+      const bits = [];
+      if (msg.suggested_heat != null) bits.push(`heat ${msg.suggested_heat}%`);
+      if (msg.suggested_fan != null) bits.push(`fan ${msg.suggested_fan}%`);
+      if (msg.suggested_drum != null) bits.push(`drum ${msg.suggested_drum}%`);
+      if (bits.length) App.logEvent(`AI applied ${bits.join(', ')}`, 'text-violet-400');
+    }
   },
 
   async applyAISuggestion(suggestion) {

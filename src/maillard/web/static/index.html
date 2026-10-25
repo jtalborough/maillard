@@ -16,8 +16,19 @@
     .event-btn:disabled { opacity: 0.4; cursor: not-allowed; }
     #emergency-stop { animation: pulse-red 2s infinite; }
     @keyframes pulse-red { 0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); } 50% { box-shadow: 0 0 0 8px rgba(239,68,68,0); } }
-    .alert-banner { animation: slideIn 0.3s ease-out; }
-    @keyframes slideIn { from { transform: translateY(-100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    #alert-stack { position: relative; z-index: 20; display: flex; flex-direction: column; gap: 0.35rem; }
+    #alert-stack.hidden { display: none; }
+    .alert-item { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; border-radius: 0.5rem; padding: 0.4rem 0.7rem; font-size: 0.8rem; font-weight: 700; color: white; }
+    .alert-item button { flex: 0 0 auto; background: transparent; color: white; border: 1px solid rgba(255,255,255,0.45); border-radius: 0.35rem; padding: 0 0.4rem; cursor: pointer; }
+    .alert-critical { background: #dc2626; }
+    .alert-warning { background: #ca8a04; }
+    #ai-panel { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+    #ai-reasoning { min-height: 0; max-height: 4.5rem; overflow-x: hidden; overflow-y: auto; overflow-wrap: anywhere; flex: 0 0 auto; }
+    #ai-suggestions { flex: 0 0 auto; }
+    #ai-applied-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #drop-prompt { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; background: rgba(127, 29, 29, 0.92); }
+    #drop-prompt.hidden { display: none; }
+    body.roasting #alert-stack { flex: 0 0 auto; }
     .log-entry { animation: fadeIn 0.2s ease-out; }
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
     .connection-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
@@ -34,24 +45,21 @@
     #side-drawer { transition: transform 0.2s ease-out; }
     /* Roasting mode: one screen, no scroll. Setup pickers hidden; chart + all controls visible. */
     body.roasting { height: 100vh; overflow: hidden; display: flex; flex-direction: column; padding: 0.5rem; }
-    body.roasting header { margin-bottom: 0.5rem; }
+    body.roasting header { flex: 0 0 auto; margin-bottom: 0.5rem; }
     body.roasting #chart-card { flex: 1 1 auto; min-height: 0; height: auto !important; margin-bottom: 0.5rem; padding: 0.5rem; }
-    body.roasting #control-row { flex: 0 0 auto; height: 34vh; margin-bottom: 0; gap: 0.5rem; }
-    body.roasting #control-row > .card { padding: 0.6rem; overflow: hidden; display: flex; flex-direction: column; }
+    body.roasting #control-row { flex: 1 1 320px; height: auto; min-height: 300px; max-height: 48vh; margin-bottom: 0; gap: 0.5rem; }
+    body.roasting #control-row > .card { padding: 0.6rem; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
     body.roasting #roast-setup, body.roasting #recommendation-card, body.roasting #ai-prompt-details,
     body.roasting #preheat-row { display: none !important; }
-    body.roasting #ai-transcript { max-height: none; flex: 1 1 auto; min-height: 0; }
+    body.roasting #ai-transcript { display: none; }
     body.roasting #ai-suggestions { flex: 0 0 auto; }
-    body.roasting #event-log { max-height: none; flex: 1 1 auto; min-height: 0; }
+    body.roasting #event-log { max-height: none; flex: 1 1 auto; min-height: 8rem; overflow-y: auto; }
     body.roasting #control-row h2 { margin-bottom: 0.4rem; }
     body.roasting .event-btn { padding-top: 0.35rem; padding-bottom: 0.35rem; }
     body.roasting #emergency-stop { padding-top: 0.4rem; padding-bottom: 0.4rem; font-size: 1rem; }
   </style>
 </head>
 <body class="min-h-screen p-4">
-
-  <!-- Alert Banner -->
-  <div id="alert-banner" class="hidden fixed top-0 left-0 right-0 z-50 p-3 text-center font-bold text-white alert-banner"></div>
 
   <!-- Header -->
   <header class="flex items-center justify-between mb-4">
@@ -95,6 +103,21 @@
       <div title="Actual BT minus planned BT"><span class="text-slate-400">vs Plan</span> <span id="val-plan-delta" class="text-lg font-bold text-slate-400">—</span><span class="text-slate-500">°C</span> <span id="val-plan-next" class="text-[11px] text-slate-500"></span></div>
     </div>
   </header>
+
+  <div id="alert-stack" class="hidden mb-2"></div>
+
+  <div id="drop-prompt" class="hidden" role="alertdialog" aria-label="Drop the roast">
+    <div class="text-center px-6 max-w-xl">
+      <div id="drop-prompt-title" class="text-4xl font-black text-white tracking-wide">DROP NOW</div>
+      <div id="drop-prompt-detail" class="mt-3 text-lg text-red-100"></div>
+      <div class="mt-6 flex justify-center gap-3">
+        <button id="drop-prompt-go" onclick="Roast.doDrop()"
+                class="bg-white text-red-700 text-xl font-black px-8 py-3 rounded-lg">Drop</button>
+        <button id="drop-prompt-dismiss" onclick="Roast.dismissDropPrompt()"
+                class="border border-white text-white text-lg font-bold px-5 py-3 rounded-lg">Not yet</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Chart -->
   <div id="chart-card" class="card p-4 mb-4" style="height: 600px;">
@@ -268,10 +291,14 @@
           Off
         </button>
       </div>
-      <div id="ai-reasoning" class="text-xs text-slate-400 italic mb-3 min-h-[2.5rem]">
+      <label class="mb-2 flex items-center gap-2 text-xs text-slate-400">
+        <input id="auto-drop" type="checkbox" onchange="Roast.setAutoDrop(this.checked)">
+        Auto-drop at target
+      </label>
+      <div id="ai-reasoning" class="text-xs text-slate-400 italic mb-2">
         AI advisor inactive
       </div>
-      <div id="ai-suggestions" class="space-y-2 flex-1"></div>
+      <div id="ai-suggestions" class="space-y-1"></div>
       <div id="ai-transcript" class="mt-3 max-h-56 overflow-y-auto space-y-2 text-xs border-t border-slate-800 pt-3">
         <div class="text-slate-500 italic">No AI transcript yet.</div>
       </div>
