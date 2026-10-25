@@ -4,6 +4,9 @@
 const History = {
   data: [],
   detailChart: null,
+  labelStyles: [],
+  siteHost: '',
+  _labelConfigLoaded: false,
 
   async render(container) {
     container.innerHTML = '<div class="text-slate-400 text-sm">Loading...</div>';
@@ -55,13 +58,16 @@ const History = {
     const container = document.getElementById('drawer-body');
     container.innerHTML = '<div class="text-slate-400 text-sm">Loading...</div>';
 
-    const r = await apiGet(`/api/roasts/${roastId}`);
+    const [r, site] = await Promise.all([
+      apiGet(`/api/roasts/${roastId}`),
+      apiGet(`/api/roasts/${roastId}/sync`),
+      this._ensureLabelConfig(),
+    ]);
     if (!r || r.status === 'error') {
       container.innerHTML = '<div class="text-red-400 text-sm">Failed to load roast.</div>';
       return;
     }
 
-    const site = await apiGet(`/api/roasts/${roastId}/sync`);
     const siteStatus = !site?.configured ? 'not configured' : (site.sync_status || 'pending');
     const siteColors = { synced: 'text-green-400', pending: 'text-amber-400', failed: 'text-red-400' };
     let siteBadge = `<span class="rounded bg-slate-800 px-2 py-1 ${siteColors[siteStatus] || 'text-slate-400'}">${this._esc(siteStatus)}</span>`;
@@ -88,7 +94,7 @@ const History = {
           ${r.roast_name ? `<div class="text-xs text-slate-500 italic">${this._esc(r.roast_name)}</div>` : ''}
           <div class="text-xs mt-0.5">
             ${r.code
-              ? `<span class="font-mono font-bold tracking-widest text-amber-300" title="Roast code (QR / roastery.example.com/r/${this._esc(r.code)})">${this._esc(r.code)}</span>`
+              ? `<span class="font-mono font-bold tracking-widest text-amber-300" title="Roast code (QR / ${this._esc(this._siteHost())}/r/${this._esc(r.code)})">${this._esc(r.code)}</span>`
               : `<button onclick="History.ensureCode('${r.id}')" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 px-1.5 py-0.5 rounded">Assign roast code</button>`}
             ${r.control_mode ? `<span class="ml-2 text-slate-500">${this._esc(r.control_mode)}</span>` : ''}
           </div>
@@ -290,14 +296,33 @@ const History = {
     return sel ? sel.value : '';
   },
 
+  _brandName() {
+    const selected = (this.labelStyles || []).find(style => style.id === this._getSelectedStyle());
+    return (selected && selected.brand_name) || 'Example Roastery';
+  },
+
+  _siteHost() {
+    return this.siteHost || 'roastery.example.com';
+  },
+
+  async _ensureLabelConfig() {
+    if (this._labelConfigLoaded) return;
+    const styles = await apiGet('/api/label-styles');
+    if (!Array.isArray(styles)) return;
+    this.labelStyles = styles;
+    const configured = styles.find(style => style.site_host);
+    this.siteHost = (configured && configured.site_host) || 'roastery.example.com';
+    this._labelConfigLoaded = true;
+  },
+
   async _loadLabelStyles(roastId) {
     const sel = document.getElementById('label-style');
     if (!sel) return;
-    const styles = await apiGet('/api/label-styles');
-    if (!styles || !styles.length) {
+    await this._ensureLabelConfig();
+    if (!this.labelStyles.length) {
       sel.innerHTML = '<option value="">Classic</option>';
     } else {
-      sel.innerHTML = styles.map(s =>
+      sel.innerHTML = this.labelStyles.map(s =>
         `<option value="${s.id}" title="${this._esc(s.description)}"${s.id === 'drop' ? ' selected' : ''}>${this._esc(s.name)}</option>`
       ).join('');
     }
@@ -461,7 +486,7 @@ const History = {
     if (r.dtr) parts.push(`DTR: ${r.dtr.toFixed(1)}%`);
     if (r.batch_size_grams) parts.push(`Batch: ${r.batch_size_grams}g`);
     parts.push('');
-    parts.push('Example Roastery');
+    parts.push(this._brandName());
     parts.push('Roasted with Maillard');
 
     const label = parts.join('\n');

@@ -14,13 +14,25 @@ Maillard connects a real, fire-breathing drum roaster to an AI assistant. It tal
 
 Real UI from a local demo run against the built-in roaster simulator, with synthetic coffees and roasts. No real roaster or AI key involved.
 
-**Live roast dashboard.** Bean and environment temperature, rate of rise, phase, controls and the event log, streaming from the roaster.
+**Live roast, AI Auto.** One screen mid-roast: the curve, heat, fan, and drum. Auto applies the copilot's settings, and a dry-end suggestion follows the turning point.
 
-![Live roast dashboard during a simulated roast](docs/images/live-roast.png)
+![Live roast in AI Auto](docs/images/live-roast.png)
 
-| Roast history | Green coffee inventory |
+**Drop detected.** The curve flags discharge during development. Finish the roast when the beans are out.
+
+![Auto-detected drop](docs/images/drop-detected.png)
+
+**Cooling fan after drop.** Heat is off and the tray fan is on.
+
+![Cooling fan on after drop](docs/images/cooling.png)
+
+| Roast history | Coffees |
 |---|---|
-| ![Roast history with cupping scores](docs/images/roast-history.png) | ![Green coffee inventory](docs/images/coffees.png) |
+| ![Roast history with cupping scores](docs/images/roast-history.png) | ![Coffee list](docs/images/coffees.png) |
+
+**Green inventory.** Lot balances and a presale drop.
+
+![Green inventory](docs/images/inventory.png)
 
 ## What is this?
 
