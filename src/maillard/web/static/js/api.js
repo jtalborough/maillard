@@ -22,7 +22,10 @@ async function apiPost(path, body = {}) {
       body: JSON.stringify(body),
     });
     let data = await res.json();
-    if (!res.ok) data = {status: 'error', error: typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || data.error || data)};
+    if (!res.ok) {
+      const message = typeof data.detail === 'string' ? data.detail : typeof data.error === 'string' ? data.error : JSON.stringify(data.detail || data.error || data);
+      data = {status: 'error', error: message};
+    }
     if (data.status === 'error') {
       App.logEvent(`Error: ${data.error}`, 'text-red-400');
     }

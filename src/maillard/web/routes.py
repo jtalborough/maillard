@@ -28,6 +28,7 @@ from maillard.db.repository import (
 from maillard.inventory.service import coffee_api_response, deduct_for_roast
 from maillard.mcp.state import ApplicationState
 from maillard.roasting.events import derive_roast_event_fields
+from maillard.web.label_service import label_weight_display, net_weight_grams
 
 _logger = logging.getLogger(__name__)
 
@@ -1829,11 +1830,6 @@ def create_router() -> APIRouter:
         flavor_notes = roast.flavor_notes
         if isinstance(flavor_notes, list):
             flavor_notes = ", ".join(flavor_notes)
-        weight_display = roast.weight_display
-
-        if bond_number is not None and weight_display is None:
-            weight_display = "12oz / 340g"
-
         return {
             "roast": roast,
             "sync_ok": sync_ok,
@@ -1857,7 +1853,6 @@ def create_router() -> APIRouter:
                 bond_number=bond_number,
                 cupping_score=cupping_score,
                 flavor_notes=flavor_notes,
-                weight_display=weight_display,
                 roast_name=roast.roast_name,
             ),
         }
@@ -1888,6 +1883,17 @@ def create_router() -> APIRouter:
                     setattr(data, key, value.strip()[:120])
         return data
 
+    def _read_net_weight(body: dict, *, required: bool) -> int | None:
+        raw = body.get("net_weight_grams") if isinstance(body, dict) else None
+        if raw is None:
+            if required:
+                raise HTTPException(422, "net_weight_grams is required")
+            return None
+        try:
+            return net_weight_grams(raw)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
     @router.post("/labels/preview")
     async def label_preview(request: Request) -> dict[str, Any]:
         import base64
@@ -1903,8 +1909,10 @@ def create_router() -> APIRouter:
         if result is None:
             return {"status": "error", "error": "Roast not found"}
 
+        grams = _read_net_weight(body, required=False)
         _apply_label_overrides(result["label_data"], body.get("overrides"))
         theme = _get_label_theme(request, body.get("style"))
+        result["label_data"].weight_display = label_weight_display(grams, theme.layout)
         png_bytes = build_preview_png(result["label_data"], theme=theme)
         b64 = base64.b64encode(png_bytes).decode("ascii")
         return {
@@ -1948,8 +1956,13 @@ def create_router() -> APIRouter:
                 "code": "not_published",
                 "warnings": roast.site_warnings,
             }
+        grams = _read_net_weight(body, required=True)
+        reprint = body.get("reprint") is True
+        if not reprint and len(roast.bag_weights_grams or []) >= roast.bags_packed:
+            raise HTTPException(409, "All bags already labeled; reprint instead")
         _apply_label_overrides(result["label_data"], body.get("overrides"))
         theme = _get_label_theme(request, body.get("style"))
+        result["label_data"].weight_display = label_weight_display(grams, theme.layout)
         transport = _label_transport(state.config)
         if transport is None:
             return {"status": "error", "error": "Printer not configured"}
@@ -1979,12 +1992,20 @@ def create_router() -> APIRouter:
         except Exception as e:
             _logger.exception("Failed to send label to printer")
             return {"status": "error", "error": f"Printer error: {e}"}
+        if not reprint:
+            await Roast.get_motor_collection().update_one(
+                {"_id": roast.id},
+                {"$push": {"bag_weights_grams": float(grams)}},
+            )
+        saved = await Roast.get(roast.id)
         return {
             "status": "ok",
             "message": "Label sent to printer"
             + (" (lp unavailable; fell back to TCP)" if fallback else ""),
             "printer": transport,
             "fallback": fallback,
+            "bag_weights_grams": list(saved.bag_weights_grams) if saved else [],
+            "bags_packed": roast.bags_packed,
         }
 
     def _label_transport(config):

@@ -156,7 +156,7 @@ class Roast(Document):
 
     # Label settings
     bond_number: int | None = None  # Drop number (displayed as "DROP #001")
-    weight_display: str | None = None  # Bag weight text (e.g. "12oz / 340g")
+    weight_display: str | None = None
     cupping_score: float | None = None  # Quality score
     flavor_notes: list[str] | None = None  # Tasting notes
     roast_name: str | None = None  # Auto-generated memorable name
@@ -173,6 +173,7 @@ class Roast(Document):
     green_weight_grams: float | None = None
     roasted_weight_grams: float | None = None
     bags_packed: int | None = Field(default=None, ge=0)
+    bag_weights_grams: list[float] = Field(default_factory=list)
     bag_size_grams: float = Field(default=340, gt=0, allow_inf_nan=False)
     drop_id: str | None = None
     green_deducted: bool = False
