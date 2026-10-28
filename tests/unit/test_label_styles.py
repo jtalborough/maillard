@@ -371,7 +371,7 @@ class TestRendering:
         sample_data.bond_number = 7
         sample_data.cupping_score = 88.5
         sample_data.flavor_notes = "blueberry, chocolate, citrus"
-        sample_data.weight_display = "12oz / 340g"
+        sample_data.weight_display = "NET WT 12.8 OZ (365 g)"
         sample_data.qr_url = "https://roastery.example.com/bond/007"
         themes = load_themes()
         theme = themes["bond"]

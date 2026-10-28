@@ -16,11 +16,13 @@ from __future__ import annotations
 import contextlib
 import io
 import logging
+import math
 import os
 import socket
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
 
 from PIL import Image
@@ -75,6 +77,30 @@ class LabelData:
         if val is None:
             return None
         return str(val)
+
+
+def net_weight_grams(grams: float) -> int:
+    if isinstance(grams, bool) or not isinstance(grams, (int, float)) or not math.isfinite(grams):
+        raise ValueError("net weight must be grams")
+    whole = math.floor(grams)
+    if whole < 50 or whole > 2000:
+        raise ValueError("net weight must be between 50 and 2000 g")
+    return whole
+
+
+def format_net_weight(grams: float) -> str:
+    whole = net_weight_grams(grams)
+    ounces = (Decimal(whole) / Decimal("28.349523125")).quantize(
+        Decimal("0.1"), rounding=ROUND_DOWN
+    )
+    return f"{ounces} OZ ({whole} g)"
+
+
+def label_weight_display(grams: int | None, layout: str) -> str:
+    if grams is None:
+        return "-" if layout == "drop" else "NET WT -"
+    core = format_net_weight(grams)
+    return core if layout == "drop" else f"NET WT {core}"
 
 
 def _fit_cell_text(draw, text, max_width, font_factory, max_size=32, min_size=22,
@@ -979,7 +1005,7 @@ def _render_drop(data: LabelData, theme) -> bytes:
     value_line_height = 28
     rows = (
         (("ORIGIN", data.origin), ("PROCESS", data.processing),
-         ("WEIGHT", data.weight_display or "12OZ / 340G")),
+         ("NET WT", data.weight_display or "-")),
         (("VARIETAL", data.varietal), ("ROAST", data.roast_level),
          ("ROASTED", data.roast_date)),
     )

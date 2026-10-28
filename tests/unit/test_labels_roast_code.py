@@ -36,10 +36,10 @@ async def test_readiness_and_print(label_app):
     await plan.insert()
     roast = Roast(code="K7Q2MX", status="completed", plan_id=plan.id,
                   curve_data={"time_seconds": [0, 600], "bt": [190, 208]}, bond_number=12,
-                  roasted_weight_grams=1020, bags_packed=3)
+                  roasted_weight_grams=1020, bags_packed=8)
     await roast.insert()
     url = f"/api/labels/print-readiness/{roast.id}"
-    payload = {"roast_id": roast.id}
+    payload = {"roast_id": roast.id, "net_weight_grams": 365}
     ready = (await client.get(url)).json()
     assert ready["qr_url"] == "https://roastery.example.com/r/K7Q2MX"
     assert ready["code"] == "K7Q2MX" and ready["printer"] == "tcp"

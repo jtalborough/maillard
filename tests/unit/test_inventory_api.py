@@ -154,7 +154,7 @@ async def test_mcp_charge_full_flow_green_persisted(local_app, coffee, charge_pa
 
 @pytest.mark.parametrize("override", [False, True])
 @pytest.mark.parametrize(
-    "weight,bags,blocked", [(None, None, True), (900, None, True), (None, 2, True), (900, 0, False)]
+    "weight,bags,blocked", [(None, None, True), (900, None, True), (None, 2, True), (900, 1, False)]
 )
 async def test_label_gate_including_override(local_app, weight, bags, blocked, override):
     client, _, _ = local_app
@@ -169,7 +169,8 @@ async def test_label_gate_including_override(local_app, weight, bags, blocked, o
     ).insert()
     with patch("maillard.web.label_service.send_to_printer") as send:
         response = await client.post(
-            "/api/labels/print", json={"roast_id": roast.id, "override": override}
+            "/api/labels/print",
+            json={"roast_id": roast.id, "override": override, "net_weight_grams": 365},
         )
     assert response.status_code == (409 if blocked else 200)
     if blocked:

@@ -319,6 +319,7 @@ class RoastResponse(BaseModel):
     green_weight_grams: float | None = None
     roasted_weight_grams: float | None = None
     bags_packed: int | None = None
+    bag_weights_grams: list[float] = Field(default_factory=list)
     bag_size_grams: float = 340
     drop_id: str | None = None
     green_deducted: bool = False

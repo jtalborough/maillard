@@ -65,7 +65,7 @@ def test_drop_value_bounds_and_row_spacing(monkeypatch):
     data = LabelData(
         roast_id="test", origin="Colombia, Vereda San Francisco", processing="Honey",
         coffee_name="Colombia Honey Vereda San Francisco", varietal="Bourbon " * 20,
-        roast_level="Medium " * 20, roast_date="October 04, 2026", weight_display="12oz / 340g",
+        roast_level="Medium " * 20, roast_date="October 04, 2026", weight_display="12.8 OZ (365 g)",
         qr_url="https://roastery.example.com/r/K7Q2MX", roast_code="K7Q2MX",
         short_url="roastery.example.com/r/K7Q2MX",
     )
@@ -119,7 +119,7 @@ def test_long_values_keep_footer_in_canvas(style):
         roast_id="test", coffee_name="Colombia Honey Vereda San Francisco",
         origin="Colombia, Vereda San Francisco " * 10, processing="Honey " * 30,
         varietal="Bourbon " * 30, roast_level="Medium " * 30,
-        roast_date="October 04, 2026", weight_display="12oz / 340g " * 30,
+        roast_date="October 04, 2026", weight_display="12.8 OZ (365 g) " * 30,
         qr_url="https://roastery.example.com/r/K7Q2MX", roast_code="K7Q2MX",
         short_url="roastery.example.com/r/K7Q2MX",
     )
@@ -164,7 +164,7 @@ async def test_request_label_overrides(label_app):
     roast = Roast(code="K7Q2MX", status="completed", coffee_id=coffee.id,
                   roasted_weight_grams=1020, bags_packed=3)
     await roast.insert()
-    payload = {"roast_id": roast.id, "override": True,
+    payload = {"roast_id": roast.id, "override": True, "net_weight_grams": 365,
                "overrides": {"coffee_name": "  Edited Title  ", "origin": "  Edited Origin  "}}
     with patch("maillard.web.label_service.build_preview_png", return_value=b"png") as render:
         assert (await client.post("/api/labels/preview", json=payload)).json()["status"] == "ok"

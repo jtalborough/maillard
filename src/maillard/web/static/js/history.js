@@ -164,13 +164,19 @@ const History = {
                 <option value="">Loading...</option>
               </select>
             </div>
-            <div class="flex gap-1">
+            <div class="flex flex-wrap gap-1 items-center justify-end">
               <button onclick="History.previewLabel('${r.id}')" class="text-xs bg-blue-700 hover:bg-blue-600 text-white px-2 py-0.5 rounded">Preview</button>
               <button onclick="History.printAnyway('${r.id}')" class="text-xs underline">Print anyway</button>
-              <button id="btn-print-label" class="text-xs bg-amber-700 hover:bg-amber-600 text-white px-2 py-0.5 rounded disabled:opacity-40 disabled:cursor-not-allowed" disabled title="Sync to site first">Print</button>
+              <label for="label-net-weight" class="text-xs text-slate-400">Bag net weight (g)</label>
+              <input id="label-net-weight" type="number" min="50" max="2000" step="any" inputmode="decimal" autofocus
+                class="w-24 bg-slate-800 border border-slate-600 rounded px-2 py-0.5 text-sm text-slate-200" />
+              <button id="btn-print-label" class="text-xs bg-amber-700 hover:bg-amber-600 text-white px-2 py-0.5 rounded disabled:opacity-40 disabled:cursor-not-allowed" disabled title="Enter bag net weight in grams">Print</button>
+              <button id="btn-reprint-label" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 px-2 py-0.5 rounded disabled:opacity-40 disabled:cursor-not-allowed" disabled>Reprint last</button>
               <button onclick="History.generateLabel('${r.id}')" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 px-2 py-0.5 rounded">Text</button>
             </div>
           </div>
+          <p class="text-xs text-slate-500 mb-1">Coffee only, tare the bag</p>
+          <p id="label-bag-progress" class="text-xs text-slate-300 mb-2"></p>
           <label class="text-xs"><input type="checkbox" ${r.published ? 'checked' : ''} onchange="History.publishOnSite('${r.id}', this.checked)"> Publish on site</label>
           <div id="label-preview" class="hidden mb-2">
             <img id="label-preview-img" class="w-full rounded border border-slate-600" alt="Label preview" />
@@ -203,12 +209,6 @@ const History = {
               <label class="text-xs text-slate-400">Drop #</label>
               <input id="label-bond-number" type="number" min="1" placeholder="1"
                 value="${r.bond_number || ''}"
-                class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm mt-0.5" />
-            </div>
-            <div>
-              <label class="text-xs text-slate-400">Weight Display</label>
-              <input id="label-weight-display" type="text" placeholder="12oz / 340g"
-                value="${this._esc(r.weight_display || '')}"
                 class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm mt-0.5" />
             </div>
             <div>
@@ -252,9 +252,31 @@ const History = {
 
     container.innerHTML = html;
 
+    this._bagWeights = Array.isArray(r.bag_weights_grams) ? r.bag_weights_grams : [];
+    this._bagsPacked = Number.isFinite(r.bags_packed) ? r.bags_packed : null;
+    this._printReadiness = null;
+    this._renderBagProgress();
+
     const printBtn = document.getElementById('btn-print-label');
     if (printBtn) {
       printBtn.addEventListener('click', () => this.printLabel(r.id));
+    }
+    document.getElementById('btn-reprint-label')?.addEventListener('click', () => this.printLabel(r.id, false, true));
+    const weightInput = document.getElementById('label-net-weight');
+    if (weightInput) {
+      weightInput.addEventListener('input', () => {
+        this._applyPrintEnabled();
+        clearTimeout(this._labelPreviewTimer);
+        this._labelPreviewTimer = setTimeout(() => this.previewLabel(r.id), 400);
+      });
+      weightInput.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        this._applyPrintEnabled();
+        const btn = document.getElementById('btn-print-label');
+        if (btn && !btn.disabled) this.printLabel(r.id);
+      });
+      weightInput.focus();
     }
 
     // Draw curve chart
@@ -330,12 +352,56 @@ const History = {
     if (roastId) this.previewLabel(roastId);
   },
 
+  _netWeightGrams() {
+    const el = document.getElementById('label-net-weight');
+    if (!el || el.value === '') return null;
+    const n = Number(el.value);
+    if (!Number.isFinite(n)) return null;
+    const grams = Math.floor(n);
+    if (grams < 50 || grams > 2000) return null;
+    return grams;
+  },
+
+  _renderBagProgress() {
+    const el = document.getElementById('label-bag-progress');
+    if (!el) return;
+    const weights = this._bagWeights || [];
+    const packed = this._bagsPacked;
+    const parts = [];
+    if (packed != null) {
+      const n = weights.length >= packed ? packed : weights.length + 1;
+      parts.push(`Bag ${n} of ${packed}`);
+    }
+    if (weights.length) parts.push(weights.map((grams) => `${Math.floor(Number(grams))} g`).join(', '));
+    el.textContent = parts.join(' · ');
+  },
+
+  _applyPrintEnabled() {
+    const btn = document.getElementById('btn-print-label');
+    const reprint = document.getElementById('btn-reprint-label');
+    const readiness = this._printReadiness;
+    const grams = this._netWeightGrams();
+    const printed = (this._bagWeights || []).length;
+    const packed = this._bagsPacked;
+    const full = packed != null && printed >= packed;
+    const ready = !!(readiness?.weights_ok && readiness?.sync_ok && readiness?.printer);
+    if (btn && btn.dataset.busy !== 'true') {
+      btn.disabled = !ready || grams == null || full;
+      if (!readiness?.weights_ok) btn.title = 'Save roasted weight and bags packed first';
+      else if (!readiness?.sync_ok) btn.title = 'Sync to site first';
+      else if (!readiness?.printer) btn.title = 'Printer not configured';
+      else if (full) btn.title = 'All bags already labeled; reprint instead';
+      else if (grams == null) btn.title = 'Enter bag net weight in grams';
+      else btn.title = 'Send to Zebra printer';
+    }
+    if (reprint && reprint.dataset.busy !== 'true') reprint.disabled = !ready || printed < 1;
+  },
+
   async _updatePrintButton(roastId) {
     const btn = document.getElementById('btn-print-label');
     if (!btn) return;
-    const readiness = await apiGet(`/api/labels/print-readiness/${roastId}`);
-    btn.disabled = !readiness?.weights_ok || !readiness?.sync_ok || !readiness?.printer;
-    btn.title = !readiness?.weights_ok ? 'Save roasted weight and bags packed first' : !readiness?.sync_ok ? 'Sync to site first' : !readiness?.printer ? 'Printer not configured' : 'Send to Zebra printer';
+    this._printReadiness = await apiGet(`/api/labels/print-readiness/${roastId}`);
+    this._applyPrintEnabled();
   },
 
   async previewLabel(roastId) {
@@ -347,7 +413,10 @@ const History = {
     previewImg.alt = 'Loading preview...';
 
     const style = this._getSelectedStyle();
-    const result = await apiPost('/api/labels/preview', { roast_id: roastId, style, overrides: this._getLabelOverrides() });
+    const body = { roast_id: roastId, style, overrides: this._getLabelOverrides() };
+    const grams = this._netWeightGrams();
+    if (grams != null) body.net_weight_grams = grams;
+    const result = await apiPost('/api/labels/preview', body);
     if (result && result.status === 'ok' && result.image) {
       previewImg.src = result.image;
       previewImg.alt = 'Label preview';
@@ -374,26 +443,50 @@ const History = {
     }
   },
 
-  async printLabel(roastId, override = false) {
+  async printLabel(roastId, override = false, reprint = false) {
+    const stored = this._bagWeights || [];
+    const grams = reprint ? Math.floor(Number(stored[stored.length - 1])) : this._netWeightGrams();
+    if (!Number.isFinite(grams)) return;
     const btn = document.getElementById('btn-print-label');
+    const reprintBtn = document.getElementById('btn-reprint-label');
     if (btn) {
+      btn.dataset.busy = 'true';
       btn.disabled = true;
       btn.textContent = 'Printing...';
     }
+    if (reprintBtn) {
+      reprintBtn.dataset.busy = 'true';
+      reprintBtn.disabled = true;
+    }
 
     const style = this._getSelectedStyle();
+    const body = { roast_id: roastId, style, override, net_weight_grams: grams, overrides: this._getLabelOverrides() };
+    if (reprint) body.reprint = true;
     try {
-      const result = await apiPost('/api/labels/print', { roast_id: roastId, style, override, overrides: this._getLabelOverrides() });
+      const result = await apiPost('/api/labels/print', body);
       if (result && result.status === 'ok') {
         App.logEvent(result.message || 'Label sent to printer', 'text-green-400');
+        if (Array.isArray(result.bag_weights_grams)) {
+          this._bagWeights = result.bag_weights_grams;
+          this._renderBagProgress();
+        }
+        if (!reprint) {
+          const input = document.getElementById('label-net-weight');
+          if (input) {
+            input.value = '';
+            input.focus();
+          }
+        }
       } else {
         App.logEvent(result?.error || 'Print failed', 'text-red-400');
       }
     } finally {
       if (btn) {
+        btn.dataset.busy = 'false';
         btn.textContent = 'Print';
-        await this._updatePrintButton(roastId);
       }
+      if (reprintBtn) reprintBtn.dataset.busy = 'false';
+      await this._updatePrintButton(roastId);
     }
   },
 
@@ -526,13 +619,11 @@ const History = {
 
   async saveLabelSettings(roastId) {
     const bondVal = document.getElementById('label-bond-number').value;
-    const weightVal = document.getElementById('label-weight-display').value.trim();
     const flavorVal = document.getElementById('label-flavor-notes').value.trim();
     const roastNameVal = document.getElementById('label-roast-name').value.trim();
 
     const payload = {
       bond_number: bondVal ? parseInt(bondVal, 10) : null,
-      weight_display: weightVal || null,
       flavor_notes: flavorVal ? flavorVal.split(',').map(s => s.trim()).filter(Boolean) : null,
       roast_name: roastNameVal || null,
     };
@@ -572,6 +663,8 @@ const History = {
     if (result && result.status === 'ok') {
       msg.className = 'text-xs text-green-400';
       msg.textContent = `Saved ${result.bags_packed ?? 0} bags. Weight loss ${result.weight_loss ?? '?'}%.`;
+      this._bagsPacked = Number.isFinite(result.bags_packed) ? result.bags_packed : null;
+      this._renderBagProgress();
       await this._updatePrintButton(roastId);
     } else {
       msg.className = 'text-xs text-red-400';
