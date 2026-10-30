@@ -27,6 +27,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from maillard.drop_label import canonical_series, format_drop_code, format_drop_heading
+
 _logger = logging.getLogger(__name__)
 
 TCP_TIMEOUT = 5  # seconds
@@ -55,6 +57,7 @@ class LabelData:
     short_url: str = ""
     qr_url: str | None = None
     bond_number: int | None = None
+    drop_series: str | None = None
     cupping_score: float | None = None
     flavor_notes: str | None = None
     weight_display: str | None = None
@@ -72,6 +75,9 @@ class LabelData:
     def get_field(self, source: str) -> str | None:
         """Get a field value by name, returning None if missing."""
         if source == "drop_number":
+            series = canonical_series(self.drop_series)
+            if series and self.bond_number is not None:
+                return format_drop_code(self.bond_number, series)
             source = "bond_number"
         val = getattr(self, source, None)
         if val is None:
@@ -941,13 +947,9 @@ def _render_drop(data: LabelData, theme) -> bytes:
     rule2_y = rule1_y + 3 + header_h
 
     f_drop = f_impact(56)
-    raw_num = data.bond_number
-    if raw_num is not None:
-        drop_text = f"DROP #{raw_num:03d}"
-    elif theme.brand_name:
-        drop_text = "DROP #001"
-    else:
-        drop_text = "ROAST"
+    drop_text = format_drop_heading(
+        data.bond_number, data.drop_series, branded=bool(theme.brand_name)
+    )
     bbox = tbbox(drop_text, f_drop)
     text_h = bbox[3] - bbox[1]
     text_ascent_offset = bbox[1]

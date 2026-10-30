@@ -206,9 +206,10 @@ const History = {
             </div>
             <p class="col-span-2 text-xs text-slate-400">Applies to preview/print only; edit the coffee in Coffees to change it permanently.</p>
             <div>
-              <label class="text-xs text-slate-400">Drop #</label>
-              <input id="label-bond-number" type="number" min="1" placeholder="1"
-                value="${r.bond_number || ''}"
+              <label for="label-bond-number" class="text-xs text-slate-400">Drop #</label>
+              <input id="label-bond-number" type="text" maxlength="10" placeholder="004 or RB001"
+                autocapitalize="characters" spellcheck="false" autocomplete="off"
+                value="${this._esc(this._dropLabelValue(r))}"
                 class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm mt-0.5" />
             </div>
             <div>
@@ -617,22 +618,42 @@ const History = {
     }
   },
 
+  _dropLabelValue(r) {
+    if (!r || r.bond_number == null || r.bond_number === '') return '';
+    const number = String(r.bond_number);
+    return r.drop_series ? `${r.drop_series}${number.padStart(3, '0')}` : number;
+  },
+
   async saveLabelSettings(roastId) {
-    const bondVal = document.getElementById('label-bond-number').value;
+    const bondVal = document.getElementById('label-bond-number').value.trim();
     const flavorVal = document.getElementById('label-flavor-notes').value.trim();
     const roastNameVal = document.getElementById('label-roast-name').value.trim();
 
     const payload = {
-      bond_number: bondVal ? parseInt(bondVal, 10) : null,
+      drop_label: bondVal,
       flavor_notes: flavorVal ? flavorVal.split(',').map(s => s.trim()).filter(Boolean) : null,
       roast_name: roastNameVal || null,
     };
 
     const result = await apiPut(`/api/roasts/${roastId}`, payload);
     const msg = document.getElementById('label-settings-msg');
+    if (result && result.status === 'error') {
+      if (msg) {
+        msg.textContent = result.error || 'Could not save drop';
+        msg.classList.remove('hidden', 'text-green-400');
+        msg.classList.add('text-red-400');
+      }
+      return;
+    }
     if (result && !result.status?.startsWith('error')) {
-      if (msg) { msg.classList.remove('hidden'); setTimeout(() => msg.classList.add('hidden'), 2000); }
-      // Refresh preview if visible
+      if (msg) {
+        msg.textContent = 'Saved!';
+        msg.classList.remove('hidden', 'text-red-400');
+        msg.classList.add('text-green-400');
+        setTimeout(() => msg.classList.add('hidden'), 2000);
+      }
+      const input = document.getElementById('label-bond-number');
+      if (input) input.value = this._dropLabelValue(result);
       const previewContainer = document.getElementById('label-preview');
       if (previewContainer && !previewContainer.classList.contains('hidden')) {
         this.previewLabel(roastId);

@@ -156,6 +156,7 @@ class Roast(Document):
 
     # Label settings
     bond_number: int | None = None  # Drop number (displayed as "DROP #001")
+    drop_series: str | None = None
     weight_display: str | None = None
     cupping_score: float | None = None  # Quality score
     flavor_notes: list[str] | None = None  # Tasting notes

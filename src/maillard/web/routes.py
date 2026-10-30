@@ -25,6 +25,7 @@ from maillard.db.repository import (
     ProfileRepository,
     RoastRepository,
 )
+from maillard.drop_label import apply_drop_fields
 from maillard.inventory.service import coffee_api_response, deduct_for_roast
 from maillard.mcp.state import ApplicationState
 from maillard.roasting.events import derive_roast_event_fields
@@ -1329,6 +1330,11 @@ def create_router() -> APIRouter:
         body = await request.json()
         from maillard.db.schemas import RoastUpdate
 
+        if isinstance(body, dict):
+            try:
+                apply_drop_fields(body)
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
         data = RoastUpdate(**body)
         repo = RoastRepository()
         roast = await repo.update(roast_id, data)
@@ -1851,6 +1857,7 @@ def create_router() -> APIRouter:
                 roast_code=code,
                 short_url=short_url,
                 bond_number=bond_number,
+                drop_series=roast.drop_series,
                 cupping_score=cupping_score,
                 flavor_notes=flavor_notes,
                 roast_name=roast.roast_name,

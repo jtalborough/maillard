@@ -18,6 +18,7 @@ from pymongo.errors import DuplicateKeyError
 from maillard.__version__ import VERSION
 from maillard.core.config import MaillardConfig, get_config, get_ingest_secret
 from maillard.db.models import Coffee, PresaleDrop, Roast, RoastPlan, SyncOutbox
+from maillard.drop_label import canonical_series
 from maillard.roasting import codes
 
 _logger = logging.getLogger(__name__)
@@ -63,6 +64,8 @@ def build_roast_payload(
         "bond_number",
     )
     data = {key: getattr(roast, key) for key in fields}
+    if canonical_series(roast.drop_series):
+        data["bond_number"] = None
     data.update({key: getattr(roast, attr) for key, attr in mapping.items()})
     data["charged_at"] = _iso(data["charged_at"])
     data["dropped_at"] = _iso(data["dropped_at"])
