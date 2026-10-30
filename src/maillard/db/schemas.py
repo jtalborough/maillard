@@ -3,7 +3,9 @@
 Defines schemas for API/MCP request validation and response serialization.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from maillard.drop_label import normalize_drop_series
 
 # =============================================================================
 # Phase Schema (used in Profile.phases JSON)
@@ -271,6 +273,7 @@ class RoastUpdate(BaseModel):
     status: str | None = None
     notes: str | None = None
     bond_number: int | None = None
+    drop_series: str | None = None
     weight_display: str | None = None
     cupping_score: float | None = None
     flavor_notes: list[str] | None = None
@@ -278,6 +281,11 @@ class RoastUpdate(BaseModel):
     green_weight_grams: float | None = Field(default=None, ge=0, le=5000)
     roasted_weight_grams: float | None = Field(default=None, ge=0, le=5000)
     published: bool | None = None
+
+    @field_validator("drop_series", mode="before")
+    @classmethod
+    def validate_drop_series(cls, value: object) -> str | None:
+        return normalize_drop_series(value)
 
 
 class RoastResponse(BaseModel):
@@ -311,6 +319,7 @@ class RoastResponse(BaseModel):
     status: str
     notes: str | None
     bond_number: int | None = None
+    drop_series: str | None = None
     weight_display: str | None = None
     cupping_score: float | None = None
     flavor_notes: list[str] | None = None
