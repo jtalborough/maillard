@@ -947,9 +947,7 @@ def _render_drop(data: LabelData, theme) -> bytes:
     rule2_y = rule1_y + 3 + header_h
 
     f_drop = f_impact(56)
-    drop_text = format_drop_heading(
-        data.bond_number, data.drop_series, branded=bool(theme.brand_name)
-    )
+    drop_text = format_drop_heading(data.bond_number, data.drop_series)
     bbox = tbbox(drop_text, f_drop)
     text_h = bbox[3] - bbox[1]
     text_ascent_offset = bbox[1]

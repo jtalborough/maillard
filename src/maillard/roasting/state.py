@@ -357,13 +357,15 @@ class RoastStateMachine(StateMachine):
         self._target_charge_temp = target_temp
         _logger.info("Starting preheat, target: %s°C", target_temp)
 
-    def on_charge(self, temp: float | None = None) -> None:
+    def on_charge(
+        self, temp: float | None = None, charged_at: datetime | None = None
+    ) -> None:
         """Called when beans are charged.
 
         Args:
             temp: Bean temperature at charge
         """
-        self._charge_time = datetime.now(UTC)
+        self._charge_time = charged_at if charged_at is not None else datetime.now(UTC)
         self._charge_temp = temp
         self._set_phase(RoastPhase.DRYING)
         _logger.info("CHARGE at %.1f°C", temp or 0)

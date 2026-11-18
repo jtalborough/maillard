@@ -25,3 +25,6 @@ jobs:
 
       - name: Run tests
         run: uv run pytest -q
+
+      - name: Run dashboard tests
+        run: node --test tests/ui/dashboard.test.cjs

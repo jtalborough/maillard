@@ -5,14 +5,15 @@ const Roast = {
   chart: null,
   chartData: { bt: [], et: [], ror: [], plan: [], labels: [] },
   activePlan: null,       // RoastPlan locked at charge (planned BT curve)
-  chargeOffset: null,     // chart elapsed seconds at CHARGE (aligns plan with stream)
-  eventMarkers: [],
   pollTimer: null,
   sliderActive: false,
   sliderDebounce: null,
   coolingOn: false,
-  chargeTimestamp: null,  // Date.now() at charge — for WS-based chart
-  streamStart: null,      // Date.now() at first WS data — for chart timeline
+  chargeTimestamp: null,
+  streamStart: null,
+  chartRoastId: null,
+  chartFinished: false,
+  elapsed: 0,
   lastBT: null,           // previous BT for simple RoR calc
   lastBTTime: null,        // timestamp of previous BT
   rorBuffer: [],             // rolling buffer for RoR smoothing
@@ -61,8 +62,10 @@ const Roast = {
         },
         scales: {
           x: {
-            title: { display: true, text: 'Time', color: '#64748b' },
-            ticks: { color: '#64748b', maxTicksLimit: 20 },
+            type: 'linear',
+            title: { display: true, text: 'Preheat elapsed', color: '#64748b' },
+            ticks: { color: '#64748b', maxTicksLimit: 20, callback: (value) =>
+              (value < 0 ? '−' : '') + App.formatTime(Math.abs(value)) },
             grid: { color: '#1e293b' },
           },
           y: {
@@ -84,9 +87,11 @@ const Roast = {
 
   _resetChartData() {
     this.chartData = { bt: [], et: [], ror: [], plan: [], labels: [] };
-    this.chargeOffset = null;
-    this.eventMarkers = [];
+    this.chargeTimestamp = null;
     this.streamStart = null;
+    this.chartRoastId = null;
+    this.chartFinished = false;
+    this.setElapsed(0, true);
     this.lastBT = null;
     this.lastBTTime = null;
     this.rorBuffer = [];
@@ -97,13 +102,13 @@ const Roast = {
       this.chart.data.datasets[2].data = this.chartData.plan;
       this.chart.data.datasets[3].data = this.chartData.ror;
       this.chart.options.plugins.annotation.annotations = {};
+      this.chart.options.scales.x.title.text = 'Preheat elapsed';
       this.chart.update('none');
     }
   },
 
   addChartPoint(timeSec, bt, et, ror) {
-    const label = App.formatTime(timeSec);
-    this.chartData.labels.push(label);
+    this.chartData.labels.push(timeSec);
     this.chartData.bt.push(bt);
     this.chartData.et.push(et);
     this.chartData.ror.push(ror);
@@ -124,15 +129,14 @@ const Roast = {
   // Planned BT (linear between phase targets) at chart time `timeSec`.
   _plannedAt(timeSec) {
     const plan = this.activePlan;
-    if (!plan || this.chargeOffset == null) return null;
+    if (!plan || this.chargeTimestamp == null) return null;
     const curve = plan.planned_curve || {};
     const ts = curve.time_seconds || [];
     const bt = curve.bt || [];
-    const t = timeSec - this.chargeOffset;
-    if (!ts.length || t < ts[0] || t > ts[ts.length - 1]) return null;
+    if (!ts.length || timeSec < ts[0] || timeSec > ts[ts.length - 1]) return null;
     for (let i = 1; i < ts.length; i++) {
-      if (t <= ts[i]) {
-        const f = (t - ts[i - 1]) / ((ts[i] - ts[i - 1]) || 1);
+      if (timeSec <= ts[i]) {
+        const f = (timeSec - ts[i - 1]) / ((ts[i] - ts[i - 1]) || 1);
         return Math.round((bt[i - 1] + (bt[i] - bt[i - 1]) * f) * 10) / 10;
       }
     }
@@ -147,29 +151,27 @@ const Roast = {
     el.textContent = (d > 0 ? '+' : '') + d.toFixed(1);
     el.className = 'text-lg font-bold ' + (Math.abs(d) <= 3 ? 'text-green-400' : Math.abs(d) <= 8 ? 'text-amber-400' : 'text-red-400');
     const plan = this.activePlan;
-    const t = timeSec - this.chargeOffset;
-    const next = (plan.phases || []).find(p => p.target_time_seconds > t);
+    const next = (plan.phases || []).find(p => p.target_time_seconds > timeSec);
     const nextEl = document.getElementById('val-plan-next');
     if (nextEl) {
       nextEl.textContent = next
-        ? `${next.name.replace(/_/g, ' ')} ${next.target_temp}°C in ${App.formatTime(Math.max(0, next.target_time_seconds - t))}`
+        ? `${next.name.replace(/_/g, ' ')} ${next.target_temp}°C in ${App.formatTime(Math.max(0, next.target_time_seconds - timeSec))}`
         : '';
     }
   },
 
-  setActivePlan(plan, chargeOffset) {
+  setActivePlan(plan) {
     this.activePlan = plan || null;
     this._showPlanWarnings(plan);
-    if (chargeOffset != null) this.chargeOffset = chargeOffset;
     const label = document.getElementById('plan-summary');
     if (label) label.textContent = plan ? this._planSummary(plan) : 'No plan (unplanned roast)';
     if (plan) {
-      // Plan target markers: first crack + drop
-      if (plan.target_fc_seconds != null && this.chargeOffset != null) {
-        this._addAnnotation(this.chargeOffset + plan.target_fc_seconds, 'PLAN FC', '#b45309');
+      this.chartData.labels.forEach((time, index) => { this.chartData.plan[index] = this._plannedAt(time); });
+      if (plan.target_fc_seconds != null) {
+        this._addAnnotation(plan.target_fc_seconds, 'PLAN FC', '#b45309');
       }
-      if (plan.target_total_seconds != null && this.chargeOffset != null) {
-        this._addAnnotation(this.chargeOffset + plan.target_total_seconds, 'PLAN DROP', '#b45309');
+      if (plan.target_total_seconds != null) {
+        this._addAnnotation(plan.target_total_seconds, 'PLAN DROP', '#b45309');
       }
     }
   },
@@ -210,25 +212,64 @@ const Roast = {
     }
   },
 
-  async restoreActivePlan(elapsedSeconds) {
+  async restoreActivePlan(roastId) {
     const data = await apiGet('/api/roast/plan');
-    if (data && data.plan && this.streamStart != null && elapsedSeconds != null) {
-      const offset = (Date.now() - this.streamStart) / 1000 - elapsedSeconds;
-      this.setActivePlan(data.plan, Math.max(0, offset));
+    if (data?.plan && this.chartRoastId === roastId && !this.chartFinished) {
+      this.setActivePlan(data.plan);
     }
   },
 
-  addEventLine(timeSec, eventName) {
-    this.eventMarkers.push({ time: timeSec, name: eventName });
+  setElapsed(seconds, reset = false) {
+    this.elapsed = reset ? seconds : Math.max(this.elapsed, seconds);
+    document.getElementById('val-time').textContent = App.formatTime(this.elapsed);
+  },
+
+  syncCharge(roast) {
+    const chargedAt = Date.parse(roast.charged_at);
+    if (!Number.isFinite(chargedAt)) return;
+    if (this.chartRoastId !== roast.roast_id) {
+      if (this.chartRoastId != null || this.chartFinished) {
+        this._resetChartData();
+        this.setActivePlan(null);
+      }
+      if (this.streamStart != null) {
+        const offset = (this.streamStart - chargedAt) / 1000;
+        this.chartData.labels.forEach((time, index, labels) => { labels[index] = time + offset; });
+      }
+      this.chartRoastId = roast.roast_id;
+      this.chargeTimestamp = chargedAt;
+      if (this.chart) this.chart.options.scales.x.title.text = 'Time from charge';
+      this._addAnnotation(0, 'CHARGE', '#22c55e');
+    }
+    if (!this.chartFinished && roast.elapsed_seconds != null) this.setElapsed(roast.elapsed_seconds);
+  },
+
+  finishChart(duration) {
+    if (duration != null) {
+      this.setElapsed(duration, true);
+      this._addAnnotation(duration, 'DROP', '#dc2626');
+    }
+    this.chartFinished = true;
+    this.stopPolling();
+  },
+
+  updateEventLines(events) {
+    if (!this.chart) return;
+    for (const event of events || []) {
+      const label = event.type.toUpperCase().replaceAll('_', ' ');
+      this._addAnnotation(event.time_seconds, label, event.type === 'charge' ? '#22c55e' : '#94a3b8');
+    }
   },
 
   _addAnnotation(timeSec, label, color) {
     if (!this.chart) return;
-    var id = 'evt-' + label + '-' + Math.round(timeSec);
-    this.chart.options.plugins.annotation.annotations[id] = {
+    const annotations = this.chart.options.plugins.annotation.annotations;
+    const id = 'evt-' + label;
+    if (annotations[id]?.xMin === timeSec) return;
+    annotations[id] = {
       type: 'line',
-      xMin: App.formatTime(timeSec),
-      xMax: App.formatTime(timeSec),
+      xMin: timeSec,
+      xMax: timeSec,
       borderColor: color || '#94a3b8',
       borderWidth: 1.5,
       borderDash: [4, 4],
@@ -251,7 +292,7 @@ const Roast = {
     if (data.et != null) document.getElementById('val-et').textContent = data.et.toFixed(1);
     if (data.ror_instant != null) document.getElementById('val-ror').textContent = data.ror_instant.toFixed(1);
     else if (data.ror_smoothed != null) document.getElementById('val-ror').textContent = data.ror_smoothed.toFixed(1);
-    if (data.elapsed_seconds != null) document.getElementById('val-time').textContent = App.formatTime(data.elapsed_seconds);
+    if (data.elapsed_seconds != null) this.setElapsed(data.elapsed_seconds);
     if (data.current_phase) document.getElementById('val-phase').textContent = data.current_phase;
     if (data.heat_percent != null) document.getElementById('val-heat').textContent = data.heat_percent;
   },
@@ -350,20 +391,19 @@ const Roast = {
     }
     if (!nowRoasting) this.dismissDropPrompt(true);
     const isPreheating = roastState === 'preheating' || roastState === 'ready_to_charge';
-    if (roast.elapsed_seconds != null) document.getElementById('val-time').textContent = App.formatTime(roast.elapsed_seconds);
+    if (isPreheating && this.chartFinished) {
+      this._resetChartData();
+      this.setActivePlan(null);
+    }
     if (roast.phase) document.getElementById('val-phase').textContent = roast.phase;
     if (roast.latest_ror != null) document.getElementById('val-ror').textContent = roast.latest_ror.toFixed(1);
 
-    // Resume chart polling if we detect an active roast (e.g. after page refresh)
-    if (roast.active && roastState === 'roasting' && !this.pollTimer) {
-      if (roast.elapsed_seconds != null) {
-        this.chargeTimestamp = Date.now() - (roast.elapsed_seconds * 1000);
-        if (this.streamStart == null) {
-          this.streamStart = this.chargeTimestamp;
-        }
+    if (nowRoasting) {
+      this.syncCharge(roast);
+      if (!this.pollTimer && this.chartRoastId && !this.chartFinished) {
+        this.startPolling();
+        if (!this.activePlan) this.restoreActivePlan(roast.roast_id);
       }
-      this.startPolling();
-      if (!this.activePlan) this.restoreActivePlan(roast.elapsed_seconds);
     }
 
     this.updateButtons(isPreheating);
@@ -403,15 +443,14 @@ const Roast = {
           document.getElementById('ctrl-drum').value = s.RC;
           document.getElementById('drum-val').textContent = s.RC + '%';
         }
-        // Start chart timeline on first WS data with valid BT
-        if (s.BT > 0 && this.streamStart == null) {
-          this.streamStart = Date.now();
+        const now = Date.parse(msg.timestamp);
+        if (s.BT > 0 && this.streamStart == null && Number.isFinite(now)) {
+          this.streamStart = now;
         }
-        // Feed chart from WS during active stream
-        if (this.streamStart && s.BT != null && s.ET != null) {
-          const elapsed = (Date.now() - this.streamStart) / 1000;
+        const origin = this.chargeTimestamp ?? this.streamStart;
+        if (origin != null && s.BT != null && s.ET != null && Number.isFinite(now)) {
+          const elapsed = (now - origin) / 1000;
           let ror = null;
-          const now = Date.now();
           if (this.lastBT != null && this.lastBTTime != null) {
             const dt = (now - this.lastBTTime) / 1000;
             if (dt > 0.5) {
@@ -434,8 +473,10 @@ const Roast = {
               ror = null;
             }
           }
-          this.addChartPoint(elapsed, s.BT, s.ET, ror);
-          document.getElementById('val-time').textContent = App.formatTime(elapsed);
+          if (!this.chartFinished) {
+            this.addChartPoint(elapsed, s.BT, s.ET, ror);
+            if (this.chargeTimestamp != null) this.setElapsed(elapsed);
+          }
           if (ror != null) document.getElementById('val-ror').textContent = ror.toFixed(1);
         }
         break;
@@ -443,25 +484,7 @@ const Roast = {
 
       case 'RoastEventMarker':
         App.logEvent(`${msg.event}: ${msg.temp_bt?.toFixed(1) || '?'}°C @ ${App.formatTime(msg.time_seconds)}`, 'text-amber-400');
-        this.addEventLine(msg.time_seconds, msg.event);
-        if (msg.event === 'CHARGE' || msg.event === 1) {
-          App.roastActive = true;
-          this.chargeTimestamp = Date.now();
-          // Add CHARGE vertical marker instead of resetting chart
-          if (this.streamStart) {
-            const chargeElapsed = (Date.now() - this.streamStart) / 1000;
-            this._addAnnotation(chargeElapsed, 'CHARGE', '#22c55e');
-            if (this.chargeOffset == null) this.chargeOffset = chargeElapsed;
-          }
-          this.updateButtons();
-          this.startPolling();
-        }
-        if (msg.event === 'DROP' || msg.event === 9) {
-          App.roastActive = false;
-          this.chargeTimestamp = null;
-          this.streamStart = null;
-          this.updateButtons();
-        }
+        this.fetchStatus();
         break;
 
       case 'SafetyAlertEvent':
@@ -537,9 +560,7 @@ const Roast = {
     App.showAlert(result?.message || 'Emergency stop unconfirmed - use Kaleido controls',
       result?.confirmed ? 'warning' : 'critical', result?.confirmed ? null : 'emergency_stop_failed');
     App.roastActive = false;
-    this.chargeTimestamp = null;
-    this.streamStart = null;
-    this.stopPolling();
+    this.finishChart();
     this.updateButtons();
     this.showNewRoastButton();
     this.fetchStatus();
@@ -644,16 +665,7 @@ const Roast = {
     if (data && data.status === 'charged') {
       Inventory.clearDrop();
       App.roastActive = true;
-      this.chargeTimestamp = Date.now();
-      // Add CHARGE vertical marker instead of resetting chart
-      if (this.streamStart) {
-        const chargeElapsed = (Date.now() - this.streamStart) / 1000;
-        this._addAnnotation(chargeElapsed, 'CHARGE', '#22c55e');
-        this.chargeOffset = chargeElapsed;
-      } else {
-        this.streamStart = Date.now();
-        this.chargeOffset = 0;
-      }
+      this.syncCharge(data);
       this.setActivePlan(data.plan || null);
       if (data.code) App.logEvent(`Roast code ${data.code}`, 'text-amber-300');
       this.updateButtons();
@@ -707,10 +719,8 @@ const Roast = {
     const data = await apiPost('/api/drop');
     if (data && data.status === 'dropped') {
       App.roastActive = false;
-      this.chargeTimestamp = null;
-      this.streamStart = null;
+      this.finishChart(data.total_time_seconds);
       this.updateButtons();
-      this.stopPolling();
       if (data.cooling) this.syncCoolingUi(data.cooling);
       else this.syncCoolingUi({ enabled: true });
       const coolNote = data.cooling && data.cooling.confirmed === false
@@ -728,22 +738,25 @@ const Roast = {
   // -- Polling --------------------------------------------------------------
   startPolling() {
     this.stopPolling();
-    this.pollTimer = setInterval(async () => {
-      const data = await apiGet('/api/roast');
-      if (data && data.status === 'active') {
+    const poll = async () => {
+      const pollTimer = this.pollTimer;
+      const roastId = this.chartRoastId;
+      const data = await apiGet(`/api/roast?roast_id=${encodeURIComponent(roastId)}`);
+      if (pollTimer !== this.pollTimer || roastId !== this.chartRoastId) return;
+      if (data?.status === 'active' && data.elapsed_seconds != null) {
         this.updateGauges(data);
+        this.updateEventLines(data.events);
         // Use server-computed RoR for gauge (more accurate than WS estimate)
         if (data.ror_smoothed != null) {
           document.getElementById('val-ror').textContent = data.ror_smoothed.toFixed(1);
         }
-      } else if (data && data.status === 'no_active_roast' && App.roastActive) {
-        App.roastActive = false;
-        this.chargeTimestamp = null;
-        this.streamStart = null;
-        this.updateButtons();
-        this.stopPolling();
+      } else if (data?.status === 'completed' || data?.status === 'no_active_roast') {
+        this.finishChart(data.total_time_seconds);
+        this.fetchStatus();
       }
-    }, 3000);
+    };
+    this.pollTimer = setInterval(poll, 3000);
+    poll();
   },
 
   stopPolling() {
@@ -764,14 +777,12 @@ const Roast = {
     this._resetChartData();
     this.setActivePlan(null);
     this.previewPlan();
-    this.chargeTimestamp = null;
     this.stopPolling();
 
     // Reset gauges
     document.getElementById('val-bt').textContent = '--';
     document.getElementById('val-et').textContent = '--';
     document.getElementById('val-ror').textContent = '--';
-    document.getElementById('val-time').textContent = '0:00';
     document.getElementById('val-phase').textContent = 'IDLE';
 
     // Clear event log

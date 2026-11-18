@@ -48,12 +48,13 @@ def test_parse_drop_label():
 
 
 def test_heading_keeps_plain_numbers_and_prefixes_series():
-    assert format_drop_heading(4, None, branded=True) == "DROP #004"
-    assert format_drop_heading(4, "", branded=True) == "DROP #004"
-    assert format_drop_heading(1, "RB", branded=True) == "DROP #RB001"
-    assert format_drop_heading(4, "ABCDE", branded=True) == "DROP #004"
-    assert format_drop_heading(None, "RB", branded=True) == "DROP #001"
-    assert format_drop_heading(None, None, branded=False) == "ROAST"
+    assert format_drop_heading(4, None) == "DROP #004"
+    assert format_drop_heading(4, "") == "DROP #004"
+    assert format_drop_heading(1, "RB") == "DROP #RB001"
+    assert format_drop_heading(4, "ABCDE") == "DROP #004"
+    assert format_drop_heading(0, "RB") == "DROP #RB000"
+    assert format_drop_heading(None, "RB") == "ROAST"
+    assert format_drop_heading(None, None) == "ROAST"
 
 
 def test_schema_rejects_bad_series_and_uppercases():

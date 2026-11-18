@@ -166,21 +166,25 @@ const History = {
             </div>
             <div class="flex flex-wrap gap-1 items-center justify-end">
               <button onclick="History.previewLabel('${r.id}')" class="text-xs bg-blue-700 hover:bg-blue-600 text-white px-2 py-0.5 rounded">Preview</button>
-              <button onclick="History.printAnyway('${r.id}')" class="text-xs underline">Print anyway</button>
+              <button id="btn-print-anyway" class="text-xs underline disabled:opacity-40" disabled>Print anyway</button>
               <label for="label-net-weight" class="text-xs text-slate-400">Bag net weight (g)</label>
               <input id="label-net-weight" type="number" min="50" max="2000" step="any" inputmode="decimal" autofocus
                 class="w-24 bg-slate-800 border border-slate-600 rounded px-2 py-0.5 text-sm text-slate-200" />
               <button id="btn-print-label" class="text-xs bg-amber-700 hover:bg-amber-600 text-white px-2 py-0.5 rounded disabled:opacity-40 disabled:cursor-not-allowed" disabled title="Enter bag net weight in grams">Print</button>
+              <button id="btn-preview-last" class="text-xs text-slate-300 px-2 py-0.5 disabled:opacity-40" disabled>Preview last</button>
               <button id="btn-reprint-label" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 px-2 py-0.5 rounded disabled:opacity-40 disabled:cursor-not-allowed" disabled>Reprint last</button>
               <button onclick="History.generateLabel('${r.id}')" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 px-2 py-0.5 rounded">Text</button>
             </div>
           </div>
           <p class="text-xs text-slate-500 mb-1">Coffee only, tare the bag</p>
           <p id="label-bag-progress" class="text-xs text-slate-300 mb-2"></p>
+          <p id="label-print-readiness" class="text-xs text-slate-300" aria-live="polite"></p>
+          <p id="label-print-result" class="text-xs text-slate-300" role="status"></p>
           <label class="text-xs"><input type="checkbox" ${r.published ? 'checked' : ''} onchange="History.publishOnSite('${r.id}', this.checked)"> Publish on site</label>
           <div id="label-preview" class="hidden mb-2">
             <img id="label-preview-img" class="w-full rounded border border-slate-600" alt="Label preview" />
             <div id="label-qr-url" class="text-xs break-all"></div>
+            <p id="label-preview-error" class="text-xs text-red-400" role="status"></p>
           </div>
           <div id="label-output" class="hidden">
             <textarea id="label-text" rows="6" readonly class="w-full bg-slate-800 border border-amber-700/50 rounded px-2 py-1.5 text-sm text-slate-200 font-mono"></textarea>
@@ -206,7 +210,14 @@ const History = {
             </div>
             <p class="col-span-2 text-xs text-slate-400">Applies to preview/print only; edit the coffee in Coffees to change it permanently.</p>
             <div>
-              <label for="label-bond-number" class="text-xs text-slate-400">Drop #</label>
+              <label for="label-drop-override" class="text-xs text-slate-400">Label drop override</label>
+              <input id="label-drop-override" type="text" maxlength="10"
+                placeholder="${this._esc(this._dropLabelValue(r) || 'Optional')}"
+                class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm mt-0.5" />
+              <p class="text-xs text-slate-500">Blank uses the saved roast drop. Last-label actions use the last submitted drop when available.</p>
+            </div>
+            <div>
+              <label for="label-bond-number" class="text-xs text-slate-400">Saved roast drop #</label>
               <input id="label-bond-number" type="text" maxlength="10" placeholder="004 or RB001"
                 autocapitalize="characters" spellcheck="false" autocomplete="off"
                 value="${this._esc(this._dropLabelValue(r))}"
@@ -256,13 +267,17 @@ const History = {
     this._bagWeights = Array.isArray(r.bag_weights_grams) ? r.bag_weights_grams : [];
     this._bagsPacked = Number.isFinite(r.bags_packed) ? r.bags_packed : null;
     this._printReadiness = null;
+    this._previewLast = false;
     this._renderBagProgress();
+    this._applyPrintEnabled();
 
-    const printBtn = document.getElementById('btn-print-label');
-    if (printBtn) {
-      printBtn.addEventListener('click', () => this.printLabel(r.id));
-    }
-    document.getElementById('btn-reprint-label')?.addEventListener('click', () => this.printLabel(r.id, false, true));
+    document.getElementById('btn-print-label').addEventListener('click', () => this.printLabel(r.id));
+    document.getElementById('btn-print-anyway').addEventListener('click', () => this.printAnyway(r.id));
+    document.getElementById('btn-preview-last').addEventListener('click', () => this.previewLabel(r.id, true));
+    document.getElementById('btn-reprint-label').addEventListener('click', () => {
+      if (this._printReadiness?.sync_ok) this.printLabel(r.id, false, true);
+      else this.printAnyway(r.id, true);
+    });
     const weightInput = document.getElementById('label-net-weight');
     if (weightInput) {
       weightInput.addEventListener('input', () => {
@@ -283,7 +298,6 @@ const History = {
     // Draw curve chart
     if (r.curve_data) this._drawCurve(r.curve_data, r);
 
-    // Disable print button if printer not configured
     this._updatePrintButton(r.id);
 
     // Load label styles into dropdown, then auto-preview
@@ -292,14 +306,14 @@ const History = {
     // Auto-preview when label style changes
     const styleSel = document.getElementById('label-style');
     if (styleSel) {
-      styleSel.addEventListener('change', () => this.previewLabel(r.id));
+      styleSel.addEventListener('change', () => this.previewLabel(r.id, this._previewLast));
     }
 
     clearTimeout(this._labelPreviewTimer);
-    for (const id of ['label-title-override', 'label-origin-override']) {
+    for (const id of ['label-title-override', 'label-origin-override', 'label-drop-override']) {
       document.getElementById(id)?.addEventListener('input', () => {
         clearTimeout(this._labelPreviewTimer);
-        this._labelPreviewTimer = setTimeout(() => this.previewLabel(r.id), 400);
+        this._labelPreviewTimer = setTimeout(() => this.previewLabel(r.id, this._previewLast), 400);
       });
     }
 
@@ -311,6 +325,7 @@ const History = {
     return {
       coffee_name: document.getElementById('label-title-override')?.value || '',
       origin: document.getElementById('label-origin-override')?.value || '',
+      drop_label: document.getElementById('label-drop-override')?.value || '',
     };
   },
 
@@ -379,54 +394,72 @@ const History = {
 
   _applyPrintEnabled() {
     const btn = document.getElementById('btn-print-label');
-    const reprint = document.getElementById('btn-reprint-label');
+    if (!btn) return;
     const readiness = this._printReadiness;
-    const grams = this._netWeightGrams();
-    const printed = (this._bagWeights || []).length;
-    const packed = this._bagsPacked;
-    const full = packed != null && printed >= packed;
-    const ready = !!(readiness?.weights_ok && readiness?.sync_ok && readiness?.printer);
-    if (btn && btn.dataset.busy !== 'true') {
-      btn.disabled = !ready || grams == null || full;
-      if (!readiness?.weights_ok) btn.title = 'Save roasted weight and bags packed first';
-      else if (!readiness?.sync_ok) btn.title = 'Sync to site first';
-      else if (!readiness?.printer) btn.title = 'Printer not configured';
-      else if (full) btn.title = 'All bags already labeled; reprint instead';
-      else if (grams == null) btn.title = 'Enter bag net weight in grams';
-      else btn.title = 'Send to Zebra printer';
-    }
-    if (reprint && reprint.dataset.busy !== 'true') reprint.disabled = !ready || printed < 1;
+    const printed = this._bagWeights.length;
+    const full = this._bagsPacked != null && printed >= this._bagsPacked;
+    const busy = btn.dataset.busy === 'true';
+    const reason = !readiness ? 'Checking print readiness…'
+      : readiness.error ? readiness.error
+      : !readiness.weights_ok ? 'Save roasted weight and bags packed first.'
+      : !readiness.printer ? 'Printer not configured.'
+      : '';
+    const bagReason = full ? 'All bags already labeled. Use Reprint last.'
+      : this._netWeightGrams() == null ? 'Enter bag net weight in grams (50–2000).'
+      : '';
+    const syncReason = readiness && !reason && !readiness.sync_ok ? 'Sync and publish the roast to enable Print. Print anyway skips the QR page check.' : '';
+    btn.disabled = busy || !!(reason || bagReason || syncReason);
+    const anyway = document.getElementById('btn-print-anyway');
+    anyway.disabled = busy || !!(reason || bagReason) || !syncReason;
+    document.getElementById('btn-reprint-label').disabled = busy || !!reason || printed < 1;
+    document.getElementById('btn-preview-last').disabled = printed < 1;
+    document.getElementById('label-print-readiness').textContent = [reason || bagReason, syncReason].filter(Boolean).join(' ');
   },
 
   async _updatePrintButton(roastId) {
     const btn = document.getElementById('btn-print-label');
     if (!btn) return;
-    this._printReadiness = await apiGet(`/api/labels/print-readiness/${roastId}`);
+    const readiness = await apiGet(`/api/labels/print-readiness/${roastId}`);
+    if (btn !== document.getElementById('btn-print-label')) return;
+    this._printReadiness = readiness || { error: 'Unable to check print readiness.' };
     this._applyPrintEnabled();
   },
 
-  async previewLabel(roastId) {
+  async previewLabel(roastId, reprint = false) {
     const previewContainer = document.getElementById('label-preview');
     const previewImg = document.getElementById('label-preview-img');
     if (!previewContainer || !previewImg) return;
-
+    this._previewLast = reprint;
+    const request = Symbol();
+    this._previewRequest = request;
+    const qrUrl = document.getElementById('label-qr-url');
+    const error = document.getElementById('label-preview-error');
     previewContainer.classList.remove('hidden');
-    previewImg.alt = 'Loading preview...';
+    previewImg.alt = 'Loading preview…';
+    previewImg.removeAttribute('src');
+    qrUrl.textContent = '';
+    error.textContent = '';
 
-    const style = this._getSelectedStyle();
-    const body = { roast_id: roastId, style, overrides: this._getLabelOverrides() };
-    const grams = this._netWeightGrams();
-    if (grams != null) body.net_weight_grams = grams;
+    const body = this._labelRequest(roastId, reprint);
     const result = await apiPost('/api/labels/preview', body);
-    if (result && result.status === 'ok' && result.image) {
+    if (this._previewRequest !== request || previewImg !== document.getElementById('label-preview-img')) return;
+    if (result?.status === 'ok' && result.image) {
       previewImg.src = result.image;
-      previewImg.alt = 'Label preview';
-      document.getElementById('label-qr-url').textContent = result.qr_url;
-      await this._updatePrintButton(roastId);
+      previewImg.alt = reprint ? 'Last label preview' : 'New label preview';
+      qrUrl.textContent = result.qr_url;
     } else {
-      previewImg.alt = 'Failed to generate preview';
-      App.logEvent(result?.error || 'Preview failed', 'text-red-400');
+      previewImg.alt = 'Preview unavailable';
+      error.textContent = result?.error || 'Could not load label preview.';
     }
+  },
+
+  _labelRequest(roastId, reprint) {
+    const body = {
+      roast_id: roastId, style: this._getSelectedStyle(), overrides: this._getLabelOverrides(), reprint,
+    };
+    const grams = this._netWeightGrams();
+    if (!reprint && grams != null) body.net_weight_grams = grams;
+    return body;
   },
 
   async publishOnSite(roastId, published) {
@@ -438,56 +471,49 @@ const History = {
     await this.syncNow(roastId);
   },
 
-  async printAnyway(roastId) {
-    if (confirm('Print even if the QR page is not live on the site?')) {
-      await this.printLabel(roastId, true);
+  async printAnyway(roastId, reprint = false) {
+    if (confirm('Submit the label even if the QR page is unavailable?')) {
+      await this.printLabel(roastId, true, reprint);
     }
   },
 
   async printLabel(roastId, override = false, reprint = false) {
-    const stored = this._bagWeights || [];
-    const grams = reprint ? Math.floor(Number(stored[stored.length - 1])) : this._netWeightGrams();
-    if (!Number.isFinite(grams)) return;
+    this._applyPrintEnabled();
     const btn = document.getElementById('btn-print-label');
-    const reprintBtn = document.getElementById('btn-reprint-label');
-    if (btn) {
-      btn.dataset.busy = 'true';
-      btn.disabled = true;
-      btn.textContent = 'Printing...';
-    }
-    if (reprintBtn) {
-      reprintBtn.dataset.busy = 'true';
-      reprintBtn.disabled = true;
-    }
+    const trigger = document.getElementById(reprint ? 'btn-reprint-label' : override ? 'btn-print-anyway' : 'btn-print-label');
+    if (!trigger || trigger.disabled) return;
+    const status = document.getElementById('label-print-result');
+    btn.dataset.busy = 'true';
+    status.className = 'text-xs text-slate-300';
+    status.textContent = 'Submitting label…';
+    this._applyPrintEnabled();
 
-    const style = this._getSelectedStyle();
-    const body = { roast_id: roastId, style, override, net_weight_grams: grams, overrides: this._getLabelOverrides() };
-    if (reprint) body.reprint = true;
+    const body = { ...this._labelRequest(roastId, reprint), override };
     try {
       const result = await apiPost('/api/labels/print', body);
-      if (result && result.status === 'ok') {
-        App.logEvent(result.message || 'Label sent to printer', 'text-green-400');
+      if (btn !== document.getElementById('btn-print-label')) return;
+      if (result?.status === 'ok') {
+        status.className = result.warning ? 'text-xs text-amber-400' : 'text-xs text-green-400';
+        status.textContent = [result.message, result.warning].filter(Boolean).join('. ');
         if (Array.isArray(result.bag_weights_grams)) {
           this._bagWeights = result.bag_weights_grams;
           this._renderBagProgress();
         }
-        if (!reprint) {
+        if (!reprint && !result.warning) {
           const input = document.getElementById('label-net-weight');
-          if (input) {
-            input.value = '';
-            input.focus();
-          }
+          if (this._netWeightGrams() === body.net_weight_grams) input.value = '';
+          input.focus();
         }
       } else {
-        App.logEvent(result?.error || 'Print failed', 'text-red-400');
+        status.className = 'text-xs text-red-400';
+        status.textContent = result?.error || 'Could not confirm submission. Check the printer before retrying.';
       }
     } finally {
-      if (btn) {
-        btn.dataset.busy = 'false';
-        btn.textContent = 'Print';
+      btn.dataset.busy = 'false';
+      if (btn === document.getElementById('btn-print-label')) {
+        this._applyPrintEnabled();
+        await this._updatePrintButton(roastId);
       }
-      if (reprintBtn) reprintBtn.dataset.busy = 'false';
-      await this._updatePrintButton(roastId);
     }
   },
 
@@ -654,9 +680,11 @@ const History = {
       }
       const input = document.getElementById('label-bond-number');
       if (input) input.value = this._dropLabelValue(result);
+      const override = document.getElementById('label-drop-override');
+      if (override) override.placeholder = this._dropLabelValue(result) || 'Optional';
       const previewContainer = document.getElementById('label-preview');
       if (previewContainer && !previewContainer.classList.contains('hidden')) {
-        this.previewLabel(roastId);
+        this.previewLabel(roastId, this._previewLast);
       }
     }
   },

@@ -441,3 +441,50 @@ async def test_connection_events_persisted(sim_app, endpoint):
     assert roast.curve_data["gaps"][0]["reason"] == "disconnected"
     assert roast.curve_data["connection_summary"]["disconnects"] == 1
     assert roast_to_response_with_curve(roast).connection_events == roast.connection_events
+
+
+@pytest.mark.asyncio
+async def test_charge_anchors_live_events_and_saved_duration_after_preheat(sim_app, monkeypatch):
+    from maillard.db.models import Roast
+
+    client, state, _app, _sim = sim_app
+    preheat = await client.post(
+        "/api/preheat",
+        json={"target_temp": 175, "heat_percent": 60, "fan_percent": 30, "drum_percent": 50},
+    )
+    assert preheat.json()["status"] == "preheating"
+    await asyncio.sleep(0.2)
+    assert (await client.get("/api/status")).json()["roast"]["elapsed_seconds"] is None
+    assert (await client.get("/api/roast")).json()["elapsed_seconds"] is None
+
+    insert = Roast.insert
+
+    async def slow_insert(roast, *args, **kwargs):
+        await asyncio.sleep(1.05)
+        return await insert(roast, *args, **kwargs)
+
+    monkeypatch.setattr(Roast, "insert", slow_insert)
+    charged = (await client.post("/api/charge", json={})).json()
+    assert charged["status"] == "charged"
+    roast_id = charged["roast_id"]
+    status = (await client.get("/api/status")).json()["roast"]
+    assert status["state"] == "roasting"
+    assert status["charged_at"] == charged["charged_at"] == (await Roast.get(roast_id)).start_time
+    assert state.roast_session.machine.charge_time.isoformat() == charged["charged_at"]
+    assert 1 <= status["elapsed_seconds"] < 3
+
+    marked = (await client.post("/api/event/first_crack")).json()
+    assert marked["status"] == "marked"
+    url = f"/api/roast?roast_id={roast_id}"
+    live = (await client.get(url)).json()
+    assert live["events"][0]["type"] == "charge"
+    assert live["events"][0]["time_seconds"] == 0
+    assert next(event["time_seconds"] for event in live["events"] if event["type"] == "fc_start") >= 1
+    drop = (await client.post("/api/drop")).json()
+    assert drop["status"] == "dropped"
+    saved = await Roast.get(roast_id)
+    assert 1 <= saved.total_time_seconds == drop["total_time_seconds"] < 3
+    assert saved.curve_data["events"][-1]["time"] == saved.total_time_seconds
+    assert (await client.get(url)).json() == {
+        "status": "completed", "total_time_seconds": saved.total_time_seconds,
+    }
