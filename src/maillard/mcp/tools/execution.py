@@ -180,6 +180,7 @@ async def start_roast(
         profile_id=profile_id,
         batch_size_grams=batch_size_grams,
         machine=existing_machine,
+        charged_at=charge_time,
     )
     state.roast_session = session
 

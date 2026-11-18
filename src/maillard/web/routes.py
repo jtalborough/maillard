@@ -327,7 +327,9 @@ def create_router() -> APIRouter:
         }
         if session is not None and session.is_active:
             elapsed = session.elapsed_time
-            roast_info["elapsed_seconds"] = round(elapsed, 1) if elapsed else None
+            roast_info["elapsed_seconds"] = round(elapsed, 1) if elapsed is not None else None
+            if session.machine.charge_time is not None:
+                roast_info["charged_at"] = session.machine.charge_time.isoformat()
             roast_info["state"] = session.state_enum.value
             phase = session.current_phase
             roast_info["phase"] = phase.name if phase else None
@@ -427,13 +429,18 @@ def create_router() -> APIRouter:
     # -- Roast progress -----------------------------------------------------
 
     @router.get("/roast")
-    async def get_roast(request: Request) -> dict[str, Any]:
+    async def get_roast(request: Request, roast_id: str | None = None) -> dict[str, Any]:
         state = _get_state(request)
 
-        if state.roast_session is None or not state.roast_session.is_active:
+        session = state.roast_session
+        if roast_id and (session is None or session.roast_id != roast_id or not session.is_active):
+            completed = await Roast.get(roast_id)
+            if completed and completed.status == RoastStatus.COMPLETED:
+                return {"status": "completed", "total_time_seconds": completed.total_time_seconds}
+            return {"status": "no_active_roast"}
+        if session is None or not session.is_active:
             return {"status": "no_active_roast"}
 
-        session = state.roast_session
         bt: float | None = None
         et: float | None = None
         if state.driver is not None and state.driver.is_connected:
@@ -452,13 +459,14 @@ def create_router() -> APIRouter:
             for e in session.collector.events
         ]
 
+        elapsed = session.elapsed_time
         return {
             "status": "active",
             "bt": bt,
             "et": et,
             "ror_instant": round(ror_instant, 1) if ror_instant else None,
             "ror_smoothed": round(ror_smoothed, 1) if ror_smoothed else None,
-            "elapsed_seconds": round(session.elapsed_time or 0, 1),
+            "elapsed_seconds": round(elapsed, 1) if elapsed is not None else None,
             "current_phase": (session.current_phase.name if session.current_phase else None),
             "sample_count": session.sample_count,
             "events": events,
@@ -837,6 +845,7 @@ def create_router() -> APIRouter:
             profile_id=body.profile_id,
             batch_size_grams=body.batch_size_grams,
             machine=existing_machine,
+            charged_at=charge_time,
         )
         state.roast_session = session
         state.roast_context.is_active = True
@@ -916,6 +925,8 @@ def create_router() -> APIRouter:
             "roast_id": roast_id,
             "code": roast_record.code,
             "charge_temp": current_bt,
+            "charged_at": charge_time.isoformat(),
+            "elapsed_seconds": session.elapsed_time,
             "plan": plan_payload,
         }
 

@@ -12,6 +12,7 @@ StateChangeEvents to record temperature samples into the CurveCollector.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from maillard.core.events import StateChangeEvent
@@ -88,6 +89,7 @@ class RoastSession:
         profile_id: str | None = None,
         batch_size_grams: int | None = None,
         machine: RoastStateMachine | None = None,
+        charged_at: datetime | None = None,
     ) -> RoastSession:
         """Create and start a new roast session.
 
@@ -113,12 +115,12 @@ class RoastSession:
         current_state = machine.state_enum
         if current_state == RoastState.IDLE:
             machine.skip_to_ready()
-            machine.charge(temp=charge_temp)
+            machine.charge(temp=charge_temp, charged_at=charged_at)
         elif current_state == RoastState.READY_TO_CHARGE:
-            machine.charge(temp=charge_temp)
+            machine.charge(temp=charge_temp, charged_at=charged_at)
         elif current_state == RoastState.PREHEATING:
             machine.mark_ready()
-            machine.charge(temp=charge_temp)
+            machine.charge(temp=charge_temp, charged_at=charged_at)
         else:
             from maillard.roasting.state import InvalidStateError
 
