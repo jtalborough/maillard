@@ -59,7 +59,7 @@ AUTO remains disabled by default (`MAILLARD_AI_AUTO_CONTROL_ENABLED=false`); roa
 
 The recommended way to run Maillard is via Docker, especially on a Synology NAS or any always-on machine.
 
-For automated NAS deployment over Tailscale, see [NAS deployment](docs/deploy-nas.md).
+For manual Compose deployment on a NAS, see [NAS deployment](docs/deploy-nas.md).
 
 **Prerequisites:** Docker and Docker Compose (included with Synology Container Manager).
 

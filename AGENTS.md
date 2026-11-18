@@ -9,4 +9,4 @@ Maillard is a supervised AI roasting copilot for the Kaleido M10 (Python 3.12, F
 - Verify hardware-facing changes in the simulator first.
 - No code comments. Keep diffs small. Add a test for behavior changes.
 - This repo is public: no real hostnames, IPs, tailnet names, keys, customer or inventory data. Use env vars and example values.
-- Merging to `main` builds `ghcr.io/jtalborough/maillard` and deploys to the NAS. Do not merge while a roast is active.
+- Merging to `main` publishes `ghcr.io/jtalborough/maillard`. Do not merge or restart an instance while a roast is active.
