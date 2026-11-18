@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from maillard.core.config import get_config
@@ -25,7 +27,41 @@ if TYPE_CHECKING:
     from maillard.mcp.state import ApplicationState
 
 _STATIC_DIR = Path(__file__).parent / "static"
+_ASSET_REFERENCE = re.compile(r"""\b(src|href)=(["'])/?([\w./-]+\.(?:js|css))\2""")
 _logger = logging.getLogger(__name__)
+
+
+def _mount_dashboard(app: FastAPI, directory: Path) -> None:
+    assets: dict[str, bytes] = {}
+
+    def version_reference(match: re.Match[str]) -> str:
+        attribute, quote, path = match.groups()
+        content = (directory / path).read_bytes()
+        key = f"{sha256(content).hexdigest()[:16]}/{path}"
+        assets[key] = content
+        return f"{attribute}={quote}/assets/{key}{quote}"
+
+    html = _ASSET_REFERENCE.sub(version_reference, (directory / "index.html").read_text("utf-8"))
+    no_store = {"Cache-Control": "no-store"}
+
+    @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+    @app.api_route("/index.html", methods=["GET", "HEAD"], include_in_schema=False)
+    async def dashboard() -> HTMLResponse:
+        return HTMLResponse(html, headers=no_store)
+
+    @app.api_route("/assets/{key:path}", methods=["GET", "HEAD"], include_in_schema=False)
+    async def dashboard_asset(key: str) -> Response:
+        content = assets.get(key)
+        if content is None:
+            return Response(status_code=404, headers=no_store)
+        media_type = "text/css" if key.endswith(".css") else "text/javascript"
+        return Response(
+            content,
+            media_type=media_type,
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    app.mount("/", StaticFiles(directory=directory), name="static")
 
 
 def _create_ai_client(api_key: str) -> anthropic.AsyncAnthropic:
@@ -211,6 +247,6 @@ def create_app(state: ApplicationState) -> FastAPI:
 
     # Static files (dashboard HTML) — mounted last so API routes take priority
     if _STATIC_DIR.is_dir():
-        app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static")
+        _mount_dashboard(app, _STATIC_DIR)
 
     return app
