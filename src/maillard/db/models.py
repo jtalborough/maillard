@@ -10,7 +10,7 @@ from typing import Literal
 from uuid import uuid4
 
 from beanie import Document
-from pydantic import Field, computed_field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
 from pymongo import IndexModel
 
 
@@ -102,6 +102,11 @@ class Profile(Document):
         ]
 
 
+class LabelDrop(BaseModel):
+    number: int | None
+    series: str | None
+
+
 class Roast(Document):
     """Roast session document.
 
@@ -175,6 +180,7 @@ class Roast(Document):
     roasted_weight_grams: float | None = None
     bags_packed: int | None = Field(default=None, ge=0)
     bag_weights_grams: list[float] = Field(default_factory=list)
+    last_label_drop: LabelDrop | None = None
     bag_size_grams: float = Field(default=340, gt=0, allow_inf_nan=False)
     drop_id: str | None = None
     green_deducted: bool = False

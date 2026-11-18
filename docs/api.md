@@ -261,3 +261,11 @@ Base URL: `http://localhost:8080/api`
   ]
 }
 ```
+
+### Roast Labels
+
+Use `GET /labels/print-readiness/{roast_id}` to check packed weights, site sync, and the configured printer transport. Transport configuration does not test printer reachability.
+
+Both `POST /labels/preview` and `POST /labels/print` take `roast_id`, a label `style`, and optional `overrides.drop_label` such as `"RB014"`. A blank override uses the saved roast drop. A new print requires `net_weight_grams` for the bag. With `reprint: true`, the request uses the last submitted bag weight and drop by default. Older roasts without a recorded label drop use the saved roast drop.
+
+`override: true` skips the site sync and publication check for a print. Saved roast weights, a bag to label, and a configured printer still apply. Success reports a queued CUPS job or a TCP send. Check the printer to confirm physical output.

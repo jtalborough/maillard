@@ -83,10 +83,10 @@ def format_drop_code(number: int | None, series: str | None = None) -> str | Non
 
 
 def format_drop_heading(
-    number: int | None, series: str | None = None, *, branded: bool = False
+    number: int | None, series: str | None = None
 ) -> str:
     """Header line for the drop layout. Plain numbers stay DROP #004."""
     code = format_drop_code(number, series)
     if code is None:
-        return "DROP #001" if branded else "ROAST"
+        return "ROAST"
     return f"DROP #{code}"

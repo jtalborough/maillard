@@ -6,11 +6,14 @@ import asyncio
 import contextlib
 import logging
 from datetime import UTC, datetime
+from subprocess import TimeoutExpired
 from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
+from pymongo.errors import PyMongoError
 
 from maillard.db.converters import (
     cupping_to_response,
@@ -25,11 +28,11 @@ from maillard.db.repository import (
     ProfileRepository,
     RoastRepository,
 )
-from maillard.drop_label import apply_drop_fields
+from maillard.drop_label import apply_drop_fields, parse_drop_label
 from maillard.inventory.service import coffee_api_response, deduct_for_roast
 from maillard.mcp.state import ApplicationState
 from maillard.roasting.events import derive_roast_event_fields
-from maillard.web.label_service import label_weight_display, net_weight_grams
+from maillard.web.label_service import LabelData, label_weight_display, net_weight_grams
 
 _logger = logging.getLogger(__name__)
 
@@ -312,6 +315,7 @@ async def drop_active_roast(
 
 def create_router() -> APIRouter:
     router = APIRouter(prefix="/api")
+    label_print_lock = asyncio.Lock()
 
     # -- Status -------------------------------------------------------------
 
@@ -1839,8 +1843,6 @@ def create_router() -> APIRouter:
                 else str(coffee.varietal)
             )
 
-        from maillard.web.label_service import LabelData
-
         # Bond-specific fields (stored on roast model)
         bond_number = roast.bond_number
         cupping_score = roast.cupping_score
@@ -1892,17 +1894,30 @@ def create_router() -> APIRouter:
             for t in themes.values()
         ]
 
-    def _apply_label_overrides(data, overrides):
-        """Apply request-only text edits without changing stored coffee data."""
+    def _apply_label_overrides(data: LabelData, roast: Roast, overrides: Any, reprint: bool) -> None:
+        if reprint and roast.last_label_drop is not None:
+            data.bond_number = roast.last_label_drop.number
+            data.drop_series = roast.last_label_drop.series
         if isinstance(overrides, dict):
             for key in ("coffee_name", "origin"):
                 value = overrides.get(key)
                 if isinstance(value, str) and value.strip():
                     setattr(data, key, value.strip()[:120])
-        return data
+            try:
+                series, number = parse_drop_label(overrides.get("drop_label"))
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            if number is not None:
+                data.bond_number = number
+                data.drop_series = series
 
-    def _read_net_weight(body: dict, *, required: bool) -> int | None:
-        raw = body.get("net_weight_grams") if isinstance(body, dict) else None
+    def _read_net_weight(body: dict, roast: Roast, *, required: bool) -> int | None:
+        if body.get("reprint") is True:
+            if not roast.bag_weights_grams:
+                raise HTTPException(409, "No submitted label to reprint")
+            raw = roast.bag_weights_grams[-1]
+        else:
+            raw = body.get("net_weight_grams")
         if raw is None:
             if required:
                 raise HTTPException(422, "net_weight_grams is required")
@@ -1927,11 +1942,13 @@ def create_router() -> APIRouter:
         if result is None:
             return {"status": "error", "error": "Roast not found"}
 
-        grams = _read_net_weight(body, required=False)
-        _apply_label_overrides(result["label_data"], body.get("overrides"))
+        roast = result["roast"]
+        grams = _read_net_weight(body, roast, required=False)
+        data = result["label_data"]
+        _apply_label_overrides(data, roast, body.get("overrides"), body.get("reprint") is True)
         theme = _get_label_theme(request, body.get("style"))
-        result["label_data"].weight_display = label_weight_display(grams, theme.layout)
-        png_bytes = build_preview_png(result["label_data"], theme=theme)
+        data.weight_display = label_weight_display(grams, theme.layout)
+        png_bytes = build_preview_png(data, theme=theme)
         b64 = base64.b64encode(png_bytes).decode("ascii")
         return {
             "status": "ok",
@@ -1942,26 +1959,21 @@ def create_router() -> APIRouter:
 
     @router.post("/labels/print")
     async def label_print(request: Request) -> dict[str, Any]:
-        from maillard.web.label_service import (
-            build_preview_png,
-            build_zpl,
-            print_via_cups,
-            send_to_printer,
-        )
-
-        state = _get_state(request)
         body = await request.json()
+        async with label_print_lock:
+            return await _submit_label(request, body)
+
+    async def _submit_label(request: Request, body: dict) -> dict[str, Any]:
+        from maillard.web.label_service import require_packed_weights
+
         roast_id = body.get("roast_id")
         if not roast_id:
             return {"status": "error", "error": "roast_id is required"}
-
         result = await _build_label_data(request, roast_id)
         if result is None:
             return {"status": "error", "error": "Roast not found"}
 
         roast = result["roast"]
-        from maillard.web.label_service import require_packed_weights
-
         require_packed_weights(roast)
         if body.get("override") is True:
             _logger.warning("Printing label with readiness override for roast %s", roast_id)
@@ -1974,57 +1986,94 @@ def create_router() -> APIRouter:
                 "code": "not_published",
                 "warnings": roast.site_warnings,
             }
-        grams = _read_net_weight(body, required=True)
+
+        grams = _read_net_weight(body, roast, required=True)
         reprint = body.get("reprint") is True
-        if not reprint and len(roast.bag_weights_grams or []) >= roast.bags_packed:
+        weights = list(roast.bag_weights_grams)
+        if not reprint and len(weights) >= roast.bags_packed:
             raise HTTPException(409, "All bags already labeled; reprint instead")
-        _apply_label_overrides(result["label_data"], body.get("overrides"))
+
+        data = result["label_data"]
+        _apply_label_overrides(data, roast, body.get("overrides"), reprint)
         theme = _get_label_theme(request, body.get("style"))
-        result["label_data"].weight_display = label_weight_display(grams, theme.layout)
-        transport = _label_transport(state.config)
+        data.weight_display = label_weight_display(grams, theme.layout)
+        config = _get_state(request).config
+        transport = _label_transport(config)
         if transport is None:
-            return {"status": "error", "error": "Printer not configured"}
-        fallback = False
+            raise HTTPException(503, "Printer not configured")
+
         try:
-            if transport == "cups":
-                try:
-                    print_via_cups(
-                        build_preview_png(result["label_data"], theme=theme),
-                        state.config.zebra_cups_name,
-                        darkness=state.config.zebra_cups_darkness,
-                        label_width=theme.width_inches,
-                        label_height=theme.height_inches,
-                    )
-                except FileNotFoundError:
-                    if state.config.zebra_transport != "auto" or not state.config.zebra_host:
-                        raise
-                    _logger.warning("lp unavailable; falling back to TCP label printing")
-                    transport = "tcp"
-                    fallback = True
-            if transport == "tcp":
-                send_to_printer(
-                    build_zpl(result["label_data"], theme=theme),
-                    state.config.zebra_host,
-                    state.config.zebra_port,
-                )
-        except Exception as e:
-            _logger.exception("Failed to send label to printer")
-            return {"status": "error", "error": f"Printer error: {e}"}
+            actual_transport = await run_in_threadpool(_send_label, data, theme, transport, config)
+        except FileNotFoundError as exc:
+            _logger.exception("CUPS lp command unavailable")
+            raise HTTPException(503, "CUPS lp command unavailable on the server") from exc
+        except (TimeoutError, TimeoutExpired) as exc:
+            _logger.exception("Label submission timed out over %s", transport)
+            raise HTTPException(504, "Printer timed out. Check for a label before retrying.") from exc
+        except (OSError, RuntimeError) as exc:
+            _logger.exception("Label submission failed via %s", transport)
+            raise HTTPException(
+                502, "Printer submission failed. Check the printer connection or CUPS queue."
+            ) from exc
+
+        fallback = transport != actual_transport
+        message = "Label job queued in CUPS" if actual_transport == "cups" else "Label data sent over TCP"
+        if fallback:
+            message += " (CUPS lp unavailable)"
+        warning = None
         if not reprint:
-            await Roast.get_motor_collection().update_one(
-                {"_id": roast.id},
-                {"$push": {"bag_weights_grams": float(grams)}},
-            )
-        saved = await Roast.get(roast.id)
+            try:
+                update = await Roast.get_motor_collection().update_one(
+                    {"_id": roast.id},
+                    {
+                        "$push": {"bag_weights_grams": float(grams)},
+                        "$set": {
+                            "last_label_drop": {"number": data.bond_number, "series": data.drop_series},
+                        },
+                    },
+                )
+                if not update.matched_count:
+                    raise PyMongoError("Roast missing after label submission")
+                weights.append(float(grams))
+            except PyMongoError:
+                _logger.exception("Could not record submitted label for roast %s", roast_id)
+                warning = "Could not save bag progress. Check the printer and refresh History before retrying."
         return {
             "status": "ok",
-            "message": "Label sent to printer"
-            + (" (lp unavailable; fell back to TCP)" if fallback else ""),
-            "printer": transport,
+            "message": message,
+            "warning": warning,
+            "printer": actual_transport,
             "fallback": fallback,
-            "bag_weights_grams": list(saved.bag_weights_grams) if saved else [],
+            "bag_weights_grams": weights,
             "bags_packed": roast.bags_packed,
         }
+
+    def _send_label(data, theme, transport, config):
+        from maillard.web.label_service import (
+            build_preview_png,
+            build_zpl,
+            print_via_cups,
+            send_to_printer,
+        )
+
+        if transport == "cups":
+            png = build_preview_png(data, theme=theme)
+            try:
+                print_via_cups(
+                    png,
+                    config.zebra_cups_name,
+                    darkness=config.zebra_cups_darkness,
+                    label_width=theme.width_inches,
+                    label_height=theme.height_inches,
+                )
+            except FileNotFoundError:
+                if config.zebra_transport != "auto" or not config.zebra_host:
+                    raise
+                _logger.warning("lp unavailable; falling back to TCP label printing")
+            else:
+                return "cups"
+        send_to_printer(build_zpl(data, theme=theme), config.zebra_host, config.zebra_port)
+        return "tcp"
 
     def _label_transport(config):
         if config.zebra_transport == "tcp":
